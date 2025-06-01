@@ -26,8 +26,8 @@ int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount) {
     if (strcmp(atom, "CARBON") == 0) w->carbon += amount;
     else if (strcmp(atom, "OXYGEN") == 0) w->oxygen += amount;
     else if (strcmp(atom, "HYDROGEN") == 0) w->hydrogen += amount;
-    else return 0; // Unknown atom type
-    return 1; // Successfully added atoms
+    else return 1; // Unknown atom type
+    return 0; // Successfully added atoms
 }
 
 void handle_client(int fd, AtomWarehouse *warehouse) {
@@ -51,7 +51,7 @@ void handle_client(int fd, AtomWarehouse *warehouse) {
     }
 
     // Check if the amount is valid
-    if (!add_atoms(warehouse, atom, amount)) {
+    if (add_atoms(warehouse, atom, amount)) {
         printf("Unknown atom type: %s\n", atom);
         return;
     }
