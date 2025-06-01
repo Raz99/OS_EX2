@@ -16,12 +16,12 @@ int main(int argc, char *argv[]) {
     }
 
     const char *hostname = argv[1]; // Hostname or IP address of the server
-    const char *port = argv[2]; // Port number to connect to
+    const char *port = argv[2]; // Port number of the server
     char message[BUFFER_SIZE]; // Buffer to hold the message to send
 
     // Main loop to read commands from the user
     while (1) {
-        printf("Enter a command (e.g., ADD HYDROGEN 3) or type \"q\" to quit:\n> ");
+        printf("Enter a command (e.g., DELIVER WATER 3) or type \"q\" to quit:\n> ");
         
         if (!fgets(message, BUFFER_SIZE, stdin)) break; // Read user input (break on EOF)
 
@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
         struct addrinfo hints = {0};
         struct addrinfo *res; // Pointer to hold the resolved address info
         hints.ai_family = AF_INET; // Use IPv4
-        hints.ai_socktype = SOCK_STREAM; // Use TCP
+        hints.ai_socktype = SOCK_DGRAM; // Use UDP
 
         int status = getaddrinfo(hostname, port, &hints, &res); // Get address info
         
@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol); // Create a socket
+        int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol); // Create a UDP socket
         
         // Check if the socket was created successfully
         if (sockfd < 0) {
@@ -54,20 +54,24 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // Connect to the server
-        if (connect(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
-            perror("connect");
-            close(sockfd); // Close the socket if connection failed
-            freeaddrinfo(res); // Free the address info structure
-            continue;
+        // Send the message and receive response
+        if (sendto(sockfd, message, strlen(message), 0, res->ai_addr, res->ai_addrlen) < 0) {
+            perror("sendto");
         }
 
-        // Send the message to the server
-        if (send(sockfd, message, strlen(message), 0) < 0) {
-            perror("send");
+        else {
+            // Receive response from server
+            char response[BUFFER_SIZE] = {0}; // Buffer to hold the response
+            int bytes_received = recvfrom(sockfd, response, BUFFER_SIZE - 1, 0, NULL, NULL); // Receive response
+            
+            // Check if the response was received successfully
+            if (bytes_received > 0) {
+                response[bytes_received] = '\0';
+                printf("Server response: %s", response);
+            }
         }
 
-        close(sockfd); // Close the socket after sending the message
+        close(sockfd); // Close the UDP socket after sending the message
         freeaddrinfo(res); // Free the address info structure after use
     }
 

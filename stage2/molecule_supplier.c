@@ -41,7 +41,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
     if (strcmp(molecule, "WATER") == 0)
     {
         if (w->hydrogen < 2 * amount && w->oxygen < amount)
-            return 0; // Not enough atoms to create water
+            return -1; // Not enough atoms to create water
 
         w->hydrogen -= 2 * amount;
         w->oxygen -= amount;
@@ -50,7 +50,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
     else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
     {
         if (w->carbon < amount || w->oxygen < 2 * amount)
-            return 0; // Not enough atoms to create carbon dioxide
+            return -1; // Not enough atoms to create carbon dioxide
 
         w->carbon -= amount;
         w->oxygen -= 2 * amount;
@@ -59,7 +59,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
     else if (strcmp(molecule, "ALCOHOL") == 0)
     {
         if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
-            return 0; // Not enough atoms to create alcohol
+            return -1; // Not enough atoms to create alcohol
 
         w->carbon -= 2 * amount;
         w->hydrogen -= 6 * amount;
@@ -69,7 +69,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
     else if (strcmp(molecule, "GLUCOSE") == 0)
     {
         if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
-            return 0; // Not enough atoms to create glucose
+            return -1; // Not enough atoms to create glucose
 
         w->carbon -= 6 * amount;
         w->hydrogen -= 12 * amount;
@@ -81,14 +81,16 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
 }
 
 void handle_udp_client(int fd, AtomWarehouse *warehouse) {
-    char buffer[BUFFER_SIZE] = {0};
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     struct sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
 
+    // Read data from the client (leaving space for null terminator)
     int bytes = recvfrom(fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
 
     if (bytes <= 0) {
         perror("recvfrom");
+        close(fd);
         return;
     }
 
@@ -97,13 +99,22 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
     // Parse command for DELIVER
     char command[16], molecule[32];
     unsigned long long amount;
-    int parsed = sscanf(buffer, "%15s %30s %llu", command, molecule, &amount);
 
+    // Used %[^0-9] to read everything that's not a digit as molecule name
+    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+
+    // Check if the command is valid
     if (parsed != 3 || strcmp(command, "DELIVER") != 0) {
         printf("Invalid UDP command: %s\n", buffer);
         const char *msg = "ERROR: Invalid command\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         return;
+    }
+
+    // Trim trailing spaces from molecule name
+    int len = strlen(molecule);
+    while (len > 0 && molecule[len-1] == ' ') {
+        molecule[--len] = '\0';
     }
 
     // Attempt to deliver molecules
@@ -121,7 +132,7 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
         printf("UDP: Unknown molecule type: %s\n", molecule);
     }
     
-    else {
+    else if (result == -1) {
         const char *msg = "NOT ENOUGH ATOMS\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         printf("UDP: Not enough atoms for %llu %s molecules\n", amount, molecule);
