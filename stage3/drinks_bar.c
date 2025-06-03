@@ -6,7 +6,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-#define MAX_CLIENTS 10 // Maximum number of concurrent clients
+#define MAX_CLIENTS 10   // Maximum number of concurrent clients
 #define BUFFER_SIZE 1024 // Size of the buffer for reading client requests
 
 typedef struct
@@ -32,8 +32,70 @@ int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount)
         w->oxygen += amount;
     else if (strcmp(atom, "HYDROGEN") == 0)
         w->hydrogen += amount;
-    else return 1; // Unknown atom type
-    return 0; // Successfully added atoms
+    else
+        return 1; // Unknown atom type
+    return 0;     // Successfully added atoms
+}
+
+int check_molecules(AtomWarehouse *w, const char *molecule, unsigned long long amount)
+{
+    if (strcmp(molecule, "WATER") == 0)
+    {
+        i = 0;
+        bool flag = true;
+        while (flag)
+        {
+            if (w->hydrogen >= 2 * (i + 1) && w->oxygen >= (i + 1))
+            {
+                i++
+            }
+            else {flag= false}
+        }
+        return i;
+    }
+
+    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+    {
+         i = 0;
+        bool flag = true;
+        while (flag)
+        {
+            if (w->carbon >= i+1) && w->oxygen >= 2 * (i+1))
+            {
+                i++
+            }
+            else {flag= false}
+        }
+        return i;
+    }
+        
+        if (w->carbon < amount || w->oxygen < 2 * amount)
+            return -1; // Not enough atoms to create carbon dioxide
+    }
+
+    else if (strcmp(molecule, "ALCOHOL") == 0)
+    {
+        if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
+            return -1; // Not enough atoms to create alcohol
+
+        w->carbon -= 2 * amount;
+        w->hydrogen -= 6 * amount;
+        w->oxygen -= amount;
+    }
+
+    else if (strcmp(molecule, "GLUCOSE") == 0)
+    {
+        if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
+            return -1; // Not enough atoms to create glucose
+
+        w->carbon -= 6 * amount;
+        w->hydrogen -= 12 * amount;
+        w->oxygen -= 6 * amount;
+    }
+
+    else
+        return 1; // Unknown molecule type
+    return 0;     // Successfully added molecules
 }
 
 int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long amount)
@@ -76,11 +138,13 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
         w->oxygen -= 6 * amount;
     }
 
-    else return 1; // Unknown molecule type
-    return 0; // Successfully added molecules
+    else
+        return 1; // Unknown molecule type
+    return 0;     // Successfully added molecules
 }
 
-void handle_udp_client(int fd, AtomWarehouse *warehouse) {
+void handle_udp_client(int fd, AtomWarehouse *warehouse)
+{
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     struct sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
@@ -88,7 +152,8 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
     // Read data from the client (leaving space for null terminator)
     int bytes = recvfrom(fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
 
-    if (bytes <= 0) {
+    if (bytes <= 0)
+    {
         perror("recvfrom");
         close(fd);
         return;
@@ -104,7 +169,8 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
     int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
 
     // Check if the command is valid
-    if (parsed != 3 || strcmp(command, "DELIVER") != 0) {
+    if (parsed != 3 || strcmp(command, "DELIVER") != 0)
+    {
         printf("Invalid UDP command: %s\n", buffer);
         const char *msg = "ERROR: Invalid command\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
@@ -113,26 +179,30 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
 
     // Trim trailing spaces from molecule name
     int len = strlen(molecule);
-    while (len > 0 && molecule[len-1] == ' ') {
+    while (len > 0 && molecule[len - 1] == ' ')
+    {
         molecule[--len] = '\0';
     }
 
     // Attempt to deliver molecules
     int result = deliver_molecules(warehouse, molecule, amount);
 
-    if (result == 0) {
+    if (result == 0)
+    {
         const char *msg = "DELIVERED\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         printf("UDP: Delivered %llu %s molecules\n", amount, molecule);
     }
-    
-    else if (result == 1) {
+
+    else if (result == 1)
+    {
         const char *msg = "ERROR: Unknown molecule type\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         printf("UDP: Unknown molecule type: %s\n", molecule);
     }
-    
-    else if (result == -1) {
+
+    else if (result == -1)
+    {
         const char *msg = "NOT ENOUGH ATOMS\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         printf("UDP: Not enough atoms for %llu %s molecules\n", amount, molecule);
@@ -141,21 +211,20 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
     print_status(warehouse); // Print the current status of the warehouse
 }
 
-
 void handle_tcp_client(int fd, AtomWarehouse *warehouse)
 {
-    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+    char buffer[BUFFER_SIZE] = {0};                     // Buffer to hold the incoming data
     int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
 
     // In case of an error or no data read, close the connection
     if (bytes_read <= 0)
     {
-        close(fd);
+        close(fd); // Close the client socket if no data is read or an error occurs
         return;
     }
 
-    char command[16], atom[16]; // Buffers for command and atom type
-    unsigned long long amount; // Variable to hold the amount of atoms
+    char command[16], atom[16];                                            // Buffers for command and atom type
+    unsigned long long amount;                                             // Variable to hold the amount of atoms
     int parsed = sscanf(buffer, "%15s %15s %llu", command, atom, &amount); // Parse the command, atom type, and amount from the buffer
 
     // Check if the command is valid
@@ -173,6 +242,87 @@ void handle_tcp_client(int fd, AtomWarehouse *warehouse)
     }
 
     print_status(warehouse); // Print the current status of the warehouse
+}
+
+int handle_stdin_client(AtomWarehouse *w)
+{
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+    int bytes = fgets(buffer, sizeof(buffer), stdin) if (bytes <= 0)
+    {
+        perror("fgets");
+        close(fd);
+        return;
+    }
+    buffer[bytes] = '\0'; // Ensure null-termination of the received string
+
+    // Parse command for DELIVER
+    char command[16], molecule[32];
+    unsigned long long amount;
+
+    // Used %[^0-9] to read everything that's not a digit as molecule name
+    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+    if (parsed != 3 || strcmp(command, "GEN") != 0)
+    {
+        printf("Invalid command: %s\n", buffer);
+        return;
+    }
+
+    // Trim trailing spaces from molecule name
+    int len = strlen(molecule);
+    while (len > 0 && molecule[len - 1] == ' ')
+    {
+        molecule[--len] = '\0';
+    }
+
+    // Attempt to deliver molecules
+    int result = get_amount_to_gen(warehouse, molecule, amount);
+}
+int get_amount_to_gen(AtomWarehouse *w, const char *molecule)
+{
+    if (strcmp(molecule, "SOFT DRING") == 0)
+    {
+        bool flag = True;
+        int i = 0;
+        while (flag)
+            if (deliver_molecules(w, "WATER", i) == deliver_molecules(w, "CARBON DIOXIDE"))
+                return -1; // Not enough atoms to create water
+
+        w->hydrogen -= 2 * amount;
+        w->oxygen -= amount;
+    }
+
+    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+    {
+        if (w->carbon < amount || w->oxygen < 2 * amount)
+            return -1; // Not enough atoms to create carbon dioxide
+
+        w->carbon -= amount;
+        w->oxygen -= 2 * amount;
+    }
+
+    else if (strcmp(molecule, "ALCOHOL") == 0)
+    {
+        if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
+            return -1; // Not enough atoms to create alcohol
+
+        w->carbon -= 2 * amount;
+        w->hydrogen -= 6 * amount;
+        w->oxygen -= amount;
+    }
+
+    else if (strcmp(molecule, "GLUCOSE") == 0)
+    {
+        if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
+            return -1; // Not enough atoms to create glucose
+
+        w->carbon -= 6 * amount;
+        w->hydrogen -= 12 * amount;
+        w->oxygen -= 6 * amount;
+    }
+
+    else
+        return 1; // Unknown molecule type
+    return 0;     // Successfully added molecules
 }
 
 int main(int argc, char *argv[])
@@ -195,64 +345,66 @@ int main(int argc, char *argv[])
 
     AtomWarehouse warehouse = {0, 0, 0}; // Initialize the warehouse with zero atoms
 
-    int tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
+    int tcp_socket = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
 
     // Check if the socket was created successfully
-    if (tcp_listener < 0)
+    if (tcp_socket < 0)
     {
         perror("socket");
         exit(EXIT_FAILURE);
     }
 
-    int udp_listener = socket(AF_INET, SOCK_DGRAM, 0); // Create a UDP socket
+    int udp_socket = socket(AF_INET, SOCK_DGRAM, 0); // Create a UDP socket
 
     // Check if the UDP socket was created successfully
-    if (udp_listener < 0)
+    if (udp_socket < 0)
     {
         perror("socket");
-        close(tcp_listener); // Close the TCP socket if UDP socket creation failed
+        close(tcp_socket); // Close the TCP socket if UDP socket creation failed
         exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in address = {0}; // Initialize the address structure
-    socklen_t addrlen = sizeof(address);// Size of the address structure
-    address.sin_family = AF_INET; // Set the address family to IPv4
+    struct sockaddr_in address = {0};     // Initialize the address structure
+    socklen_t addrlen = sizeof(address);  // Size of the address structure
+    address.sin_family = AF_INET;         // Set the address family to IPv4
     address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
-    address.sin_port = htons(port); // Convert the port number to network byte order
+    address.sin_port = htons(port);       // Convert the port number to network byte order
 
     // Bind the socket to the address and port (TCP)
-    if (bind(tcp_listener, (struct sockaddr *)&address, addrlen) < 0)
+    if (bind(tcp_socket, (struct sockaddr *)&address, addrlen) < 0)
     {
         perror("bind");
-        close(tcp_listener); // Close the TCP socket
+        close(tcp_socket); // Close the TCP socket
         exit(EXIT_FAILURE);
     }
 
     // Bind the socket to the address and port (UDP)
-    if (bind(udp_listener, (struct sockaddr *)&address, addrlen) < 0)
+    if (bind(udp_socket, (struct sockaddr *)&address, addrlen) < 0)
     {
         perror("bind");
-        close(tcp_listener); // Close the TCP socket
-        close(udp_listener); // Close the UDP socket
+        close(tcp_socket); // Close the TCP socket
+        close(udp_socket); // Close the UDP socket
         exit(EXIT_FAILURE);
     }
 
     // Set the socket to listen for incoming connections (TCP)
-    if (listen(tcp_listener, MAX_CLIENTS) < 0)
+    if (listen(tcp_socket, MAX_CLIENTS) < 0)
     {
         perror("listen");
-        close(tcp_listener); // Close the TCP socket
-        close(udp_listener); // Close the UDP socket
+        close(tcp_socket); // Close the TCP socket
+        close(udp_socket); // Close the UDP socket
         exit(EXIT_FAILURE);
     }
-    
-    struct pollfd fds[MAX_CLIENTS + 2]; // Array of poll file descriptors
-    fds[0].fd = tcp_listener; // The first element is the listener socket for TCP connections
-    fds[0].events = POLLIN; // Set the TCP listener to poll for incoming connections
-    fds[1].fd = udp_listener; // The second element is the UDP socket for incoming data
-    fds[1].events = POLLIN; // Set the UDP listener to poll for incoming data
 
-    for (int i = 2; i < MAX_CLIENTS + 2; i++)
+    struct pollfd fds[MAX_CLIENTS + 3]; // Array of poll file descriptors
+    fds[0].fd = tcp_socket;             // The first element is the listener socket for TCP connections
+    fds[0].events = POLLIN;             // Set the TCP listener to poll for incoming connections
+    fds[1].fd = udp_socket;             // The second element is the UDP socket for incoming data
+    fds[1].events = POLLIN;             // Set the UDP listener to poll for incoming data
+    fds[2].fd = STDIN_FILENO;           // The third element is the standard input (stdin) for reading commands
+    fds[2].events = POLLIN;             // Set the stdin to poll for incoming data
+
+    for (int i = 3; i < MAX_CLIENTS + 3; i++)
     {
         fds[i].fd = -1; // Initialize the rest of the fds to -1 (no client connected)
     }
@@ -262,7 +414,7 @@ int main(int argc, char *argv[])
     // Main loop to accept and handle client connections
     while (1)
     {
-        int ready = poll(fds, MAX_CLIENTS + 2, -1); // Wait indefinitely for events on the file descriptors
+        int ready = poll(fds, MAX_CLIENTS + 3, -1); // Wait indefinitely for events on the file descriptors
 
         // Check if poll was successful
         if (ready < 0)
@@ -274,7 +426,7 @@ int main(int argc, char *argv[])
         // Check if the TCP listener socket has incoming connections
         if (fds[0].revents & POLLIN)
         {
-            int client_fd = accept(tcp_listener, NULL, NULL); // Accept a new client connection
+            int client_fd = accept(tcp_socket, NULL, NULL); // Accept a new client connection
 
             // Check if the accept was successful
             if (client_fd < 0)
@@ -284,7 +436,7 @@ int main(int argc, char *argv[])
             }
 
             // Find an empty slot in the fds array for the new client
-            for (int i = 2; i < MAX_CLIENTS + 2; i++)
+            for (int i = 3; i < MAX_CLIENTS + 3; i++)
             {
                 if (fds[i].fd == -1)
                 {
@@ -298,11 +450,17 @@ int main(int argc, char *argv[])
         // Check if the UDP listener socket has incoming connections
         if (fds[1].revents & POLLIN)
         {
-            handle_udp_client(udp_listener, &warehouse);
+            handle_udp_client(udp_socket, &warehouse);
+        }
+
+        // Check if the stdin has data to read
+        if (fds[2].revents & POLLIN)
+        {
+            int amount = get_amount_to_gen(&warehouse);
         }
 
         // Iterate through the file descriptors to handle client requests (TCP)
-        for (int i = 2; i < MAX_CLIENTS + 2; i++)
+        for (int i = 3; i < MAX_CLIENTS + 3; i++)
         {
             // Check if the file descriptor is valid and has data to read
             if (fds[i].fd != -1 && (fds[i].revents & POLLIN))
@@ -313,7 +471,7 @@ int main(int argc, char *argv[])
     }
 
     // Close the listener sockets (these lines will never be reached in this infinite loop)
-    close(tcp_listener); // Close the TCP listener socket
-    close(udp_listener); // Close the UDP listener socket
+    close(tcp_socket); // Close the TCP listener socket
+    close(udp_socket); // Close the UDP listener socket
     return 0;
 }

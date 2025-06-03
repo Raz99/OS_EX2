@@ -4,9 +4,19 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
 
-#define MAX_CLIENTS 10 // Maximum number of concurrent clients
 #define BUFFER_SIZE 1024 // Size of the buffer for reading client requests
+
+// Global variables for cleanup
+struct pollfd *fds = NULL;
+int listener = -1;
+int running = 1;
+
+// Signal handler for graceful shutdown
+void handle_signal(int sig) {
+    running = 0;
+}
 
 typedef struct {
     unsigned long long carbon;
@@ -29,14 +39,14 @@ int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount) {
     return 0; // Successfully added atoms
 }
 
-void handle_client(int fd, AtomWarehouse *warehouse) {
+int handle_client(int fd, AtomWarehouse *warehouse) {
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
     
     // In case of an error or no data read, close the connection
     if (bytes_read <= 0) {
         close(fd);
-        return;
+        return 1; // Connection closed
     }
 
     char command[16], atom[16]; // Buffers for command and atom type
@@ -46,16 +56,17 @@ void handle_client(int fd, AtomWarehouse *warehouse) {
     // Check if the command is valid
     if (parsed != 3 || strcmp(command, "ADD") != 0) {
         printf("Invalid command: %s", buffer);
-        return;
+        return 0; // Connection still open
     }
 
     // Check if the amount is valid
     if (add_atoms(warehouse, atom, amount)) {
         printf("Unknown atom type: %s\n", atom);
-        return;
+        return 0; // Connection still open
     }
 
     print_status(warehouse); // Print the current status of the warehouse
+    return 0; // Connection still open
 }
 
 int main(int argc, char *argv[]) {
@@ -75,11 +86,23 @@ int main(int argc, char *argv[]) {
 
     AtomWarehouse warehouse = {0, 0, 0}; // Initialize the warehouse with zero atoms
 
-    int listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
+    // Set up signal handlers for graceful shutdown
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
     
     // Check if the socket was created successfully
     if (listener < 0) {
         perror("socket");
+        exit(EXIT_FAILURE);
+    }
+
+    // Set socket option to reuse address to avoid "address already in use"
+    int opt = 1;
+    if (setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        close(listener);
         exit(EXIT_FAILURE);
     }
 
@@ -97,25 +120,33 @@ int main(int argc, char *argv[]) {
     }
 
     // Set the socket to listen for incoming connections
-    if (listen(listener, MAX_CLIENTS) < 0) {
+    if (listen(listener, SOMAXCONN) < 0) { // SOMAXCONN is the maximum queue length for pending connections
         perror("listen");
         close(listener);
         exit(EXIT_FAILURE);
     }
 
-    struct pollfd fds[MAX_CLIENTS + 1]; // Array of poll file descriptors
-    fds[0].fd = listener; // The first element is the listener socket
-    fds[0].events = POLLIN; // Set the listener to poll for incoming connections
-    for (int i = 1; i <= MAX_CLIENTS; i++) {
-        fds[i].fd = -1; // Initialize the rest of the fds to -1 (no client connected)
+    // Allocate memory for the poll file descriptors
+    int fds_capacity = 10;
+    fds = malloc(fds_capacity * sizeof(struct pollfd));
+    if (!fds) {
+        perror("malloc");
+        close(listener);
+        exit(EXIT_FAILURE);
     }
 
-    printf("atom_warehouse server started on port %d\n", port); // Print server start message
+    int nfds = 1; // Number of valid file descriptors
+    fds[0].fd = listener; // The first element is the listener socket
+    fds[0].events = POLLIN; // Set the listener to poll for incoming connections
+
+    printf("atom_warehouse server started on port %d (Use CTRL+C to shut down)\n", port); // Print server start message
 
     // Main loop to accept and handle client connections
-    while (1) {
-        int ready = poll(fds, MAX_CLIENTS + 1, -1); // Wait indefinitely for events on the file descriptors
+    while (running) {
+        int ready = poll(fds, nfds, 1000); // Poll with a timeout so we can check running flag
         
+        if (!running) break; // Check if we need to exit
+
         // Check if poll was successful
         if (ready < 0) {
             perror("poll");
@@ -132,26 +163,49 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-            // Find an empty slot in the fds array for the new client
-            for (int i = 1; i <= MAX_CLIENTS; i++) {
-                if (fds[i].fd == -1) {
-                    fds[i].fd = client_fd; // Assign the new client file descriptor
-                    fds[i].events = POLLIN; // Set the new client to poll for incoming data
-                    break;
+            // Resize the array if we're out of space
+            if (nfds >= fds_capacity) {
+                fds_capacity *= 2;  // Double the capacity
+                struct pollfd *new_fds = realloc(fds, fds_capacity * sizeof(struct pollfd));
+                if (!new_fds) {
+                    perror("realloc");
+                    close(client_fd);
+                    continue;
                 }
+                fds = new_fds;
             }
+
+            // Add the new client to the end of the array
+            fds[nfds].fd = client_fd;
+            fds[nfds].events = POLLIN;
+            nfds++;
         }
 
         // Iterate through the file descriptors to handle client requests
-        for (int i = 1; i <= MAX_CLIENTS; i++) {
-            // Check if the file descriptor is valid and has data to read
-            if (fds[i].fd != -1 && (fds[i].revents & POLLIN)) {
-                handle_client(fds[i].fd, &warehouse); // Handle the client request
-                fds[i].fd = -1; // Reset the file descriptor to -1 after handling the request
+        for (int i = 1; i < nfds; i++) {
+            // Check if this fd has data to read
+            if (fds[i].revents & POLLIN) {
+                int connection_closed = handle_client(fds[i].fd, &warehouse); // Handle the client request
+                
+                if (connection_closed) {
+                    // Shift remaining elements to fill the gap
+                    for (int j = i; j < nfds - 1; j++) {
+                        fds[j] = fds[j + 1];
+                    }
+                    nfds--;
+                    i--; // Adjust index since we removed an element
+                }
             }
         }
     }
 
-    close(listener); // Close the listener socket (this line will never be reached in this infinite loop)
+    // Clean up: close all client sockets and free resources
+    for (int i = 0; i < nfds; i++) {
+        if (fds[i].fd >= 0) {
+            close(fds[i].fd); // Close each socket
+        }
+    }
+    free(fds); // Free the allocated memory for file descriptors
+    printf("Server shut down successfully.\n");
     return 0;
 }
