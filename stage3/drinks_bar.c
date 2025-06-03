@@ -278,11 +278,11 @@ int handle_stdin_client(AtomWarehouse *w)
     buffer[bytes] = '\0'; // Ensure null-termination of the received string
 
     // Parse command for DELIVER
-    char command[16], molecule[32];
+    char command[16], drink[32];
     unsigned long long amount;
 
     // Used %[^0-9] to read everything that's not a digit as molecule name
-    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, drink, &amount);
     if (parsed != 3 || strcmp(command, "GEN") != 0)
     {
         printf("Invalid command: %s\n", buffer);
@@ -290,63 +290,43 @@ int handle_stdin_client(AtomWarehouse *w)
     }
 
     // Trim trailing spaces from molecule name
-    int len = strlen(molecule);
-    while (len > 0 && molecule[len - 1] == ' ')
+    int len = strlen(drink);
+    while (len > 0 && drink[len - 1] == ' ')
     {
-        molecule[--len] = '\0';
+        drink[--len] = '\0';
     }
 
     // Attempt to deliver molecules
-    int result = get_amount_to_gen(warehouse, molecule, amount);
+    int result = get_amount_to_gen(warehouse, drink, amount);
+    printf("You can make %d %s.\n", result , drink);
+    
 
 }
-int get_amount_to_gen(AtomWarehouse *w, const char *molecule)
+int min3(int a, int b, int c) {
+    int min = a;
+    if (b < min) min = b;
+    if (c < min) min = c;
+    return min;
+}
+int get_amount_to_gen(AtomWarehouse *w, const char *drink)
 {
-    if (strcmp(molecule, "SOFT DRING") == 0)
+    if (strcmp(drink, "SOFT DRING") == 0)
     {
-        
-        bool flag = True;
-        int i = 0;
-        while (flag)
-            if (check_molecules(w, "WATER"),check_molecules(w, "CARBON DIOXIDE"),check_molecules(w,"GLUCOSE"))
-                return -1; // Not enough atoms to create water
-
-        w->hydrogen -= 2 * amount;
-        w->oxygen -= amount;
+        return min3(check_molecules(w, "WATER"),check_molecules(w, "CARBON DIOXIDE"),check_molecules(w,"GLUCOSE"));
     }
 
-    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+    else if (strcmp(drink, "VODKA") == 0)
     {
-        if (w->carbon < amount || w->oxygen < 2 * amount)
-            return -1; // Not enough atoms to create carbon dioxide
-
-        w->carbon -= amount;
-        w->oxygen -= 2 * amount;
+        return min3(check_molecules(w, "WATER"),check_molecules(w, "ALCOHOL"),check_molecules(w,"GLUCOSE"));
     }
 
-    else if (strcmp(molecule, "ALCOHOL") == 0)
+    else if (strcmp(drink, "CHAMPAGNE") == 0)
     {
-        if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
-            return -1; // Not enough atoms to create alcohol
-
-        w->carbon -= 2 * amount;
-        w->hydrogen -= 6 * amount;
-        w->oxygen -= amount;
-    }
-
-    else if (strcmp(molecule, "GLUCOSE") == 0)
-    {
-        if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
-            return -1; // Not enough atoms to create glucose
-
-        w->carbon -= 6 * amount;
-        w->hydrogen -= 12 * amount;
-        w->oxygen -= 6 * amount;
+       return min3(check_molecules(w, "WATER"),check_molecules(w, "CARBON DIOXIDE"),check_molecules(w,"ALCOHOL"));
     }
 
     else
         return 1; // Unknown molecule type
-    return 0;     // Successfully added molecules
 }
 
 int main(int argc, char *argv[])

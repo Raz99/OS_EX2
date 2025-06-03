@@ -269,6 +269,9 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // Initialize the array to zero out all fields including revents
+    memset(fds, 0, fds_capacity * sizeof(struct pollfd));
+
     int nfds = 2; // Number of valid file descriptors
     fds[0].fd = tcp_listener; // The first element is the listener socket
     fds[0].events = POLLIN; // Set the listener to poll for incoming connections

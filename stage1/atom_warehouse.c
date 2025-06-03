@@ -135,6 +135,9 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // Initialize the array to zero out all fields including revents
+    memset(fds, 0, fds_capacity * sizeof(struct pollfd));
+
     int nfds = 1; // Number of valid file descriptors
     fds[0].fd = listener; // The first element is the listener socket
     fds[0].events = POLLIN; // Set the listener to poll for incoming connections
@@ -206,6 +209,6 @@ int main(int argc, char *argv[]) {
         }
     }
     free(fds); // Free the allocated memory for file descriptors
-    printf("Server shut down successfully.\n");
+    printf("\nServer shut down successfully.\n");
     return 0;
 }
