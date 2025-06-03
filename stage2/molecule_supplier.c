@@ -351,6 +351,6 @@ int main(int argc, char *argv[]) {
         }
     }
     free(fds); // Free the allocated memory for file descriptors
-    printf("Server shut down successfully.\n");
+    printf("\nServer shut down successfully.\n");
     return 0;
 }
