@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "poll.h": "c"
+        "poll.h": "c",
+        "in.h": "c"
     }
 }

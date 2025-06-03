@@ -41,106 +41,128 @@ int check_molecules(AtomWarehouse *w, const char *molecule, unsigned long long a
 {
     if (strcmp(molecule, "WATER") == 0)
     {
-        i = 0;
+        int i = 0;
         bool flag = true;
         while (flag)
         {
             if (w->hydrogen >= 2 * (i + 1) && w->oxygen >= (i + 1))
             {
-                i++
+                i++;
             }
-            else {flag= false}
+            else
+            {
+                flag = false;
+            }
         }
         return i;
     }
 
     else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
     {
-         i = 0;
+        int i = 0;
         bool flag = true;
         while (flag)
         {
-            if (w->carbon >= i+1) && w->oxygen >= 2 * (i+1))
+            if (w->carbon >= (i + 1) && w->oxygen >= 2 * (i + 1))
             {
-                i++
+                i++;
             }
-            else {flag= false}
+            else
+            {
+                flag = false;
+            }
         }
         return i;
-    }
-        
-        if (w->carbon < amount || w->oxygen < 2 * amount)
-            return -1; // Not enough atoms to create carbon dioxide
     }
 
     else if (strcmp(molecule, "ALCOHOL") == 0)
     {
-        if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
-            return -1; // Not enough atoms to create alcohol
-
-        w->carbon -= 2 * amount;
-        w->hydrogen -= 6 * amount;
-        w->oxygen -= amount;
+        int i = 0;
+        bool flag = true;
+        while (flag)
+        {
+            if (w->carbon >= 2 * (i + 1) && w->hydrogen >= 6 * (i + 1) && w->oxygen >= (i + 1))
+            {
+                i++;
+            }
+            else
+            {
+                flag = false;
+            }
+        }
+        return i;
     }
 
     else if (strcmp(molecule, "GLUCOSE") == 0)
     {
-        if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
-            return -1; // Not enough atoms to create glucose
-
-        w->carbon -= 6 * amount;
-        w->hydrogen -= 12 * amount;
-        w->oxygen -= 6 * amount;
+        int i = 0;
+        bool flag = true;
+        while (flag)
+        {
+            if (w->carbon >= 6 * (i + 1) && w->hydrogen >= 12 * (i + 1) || w->oxygen >= 6 * (i + 1))
+            {
+                i++;
+            }
+            else
+            {
+                flag = false;
+            }
+        }
+        return i;
     }
-
     else
-        return 1; // Unknown molecule type
-    return 0;     // Successfully added molecules
+        return -1; // Unknown molecule type
 }
 
 int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long amount)
 {
-    if (strcmp(molecule, "WATER") == 0)
+    int result = check_molecules(w, molecule);
+    if (result >= amount)
     {
-        if (w->hydrogen < 2 * amount && w->oxygen < amount)
-            return -1; // Not enough atoms to create water
+        if (strcmp(molecule, "WATER") == 0)
+        {
+            w->hydrogen -= 2 * amount;
+            w->oxygen -= amount;
+            return 0;
+        }
+        else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+        {
+            w->carbon -= amount;
+            w->oxygen -= 2 * amount;
+            return 0;
+        }
 
-        w->hydrogen -= 2 * amount;
-        w->oxygen -= amount;
+        else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+        {
+            w->carbon -= amount;
+            w->oxygen -= 2 * amount;
+            return 0;
+        }
+
+        else if (strcmp(molecule, "ALCOHOL") == 0)
+        {
+            w->carbon -= 2 * amount;
+            w->hydrogen -= 6 * amount;
+            w->oxygen -= amount;
+            return 0;
+        }
+
+        else if (strcmp(molecule, "GLUCOSE") == 0)
+        {
+            w->carbon -= 6 * amount;
+            w->hydrogen -= 12 * amount;
+            w->oxygen -= 6 * amount;
+            return 0;
+        }
     }
-
-    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+    else if (result == -1)
     {
-        if (w->carbon < amount || w->oxygen < 2 * amount)
-            return -1; // Not enough atoms to create carbon dioxide
-
-        w->carbon -= amount;
-        w->oxygen -= 2 * amount;
+        return -1;
     }
-
-    else if (strcmp(molecule, "ALCOHOL") == 0)
+    else if (result == 0)
     {
-        if (w->carbon < 2 * amount || w->hydrogen < 6 * amount || w->oxygen < amount)
-            return -1; // Not enough atoms to create alcohol
-
-        w->carbon -= 2 * amount;
-        w->hydrogen -= 6 * amount;
-        w->oxygen -= amount;
+        return 1;
     }
-
-    else if (strcmp(molecule, "GLUCOSE") == 0)
-    {
-        if (w->carbon < 6 * amount || w->hydrogen < 12 * amount || w->oxygen < 6 * amount)
-            return -1; // Not enough atoms to create glucose
-
-        w->carbon -= 6 * amount;
-        w->hydrogen -= 12 * amount;
-        w->oxygen -= 6 * amount;
-    }
-
-    else
-        return 1; // Unknown molecule type
-    return 0;     // Successfully added molecules
 }
 
 void handle_udp_client(int fd, AtomWarehouse *warehouse)
@@ -194,14 +216,14 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse)
         printf("UDP: Delivered %llu %s molecules\n", amount, molecule);
     }
 
-    else if (result == 1)
+    else if (result == -1)
     {
         const char *msg = "ERROR: Unknown molecule type\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         printf("UDP: Unknown molecule type: %s\n", molecule);
     }
 
-    else if (result == -1)
+    else if (result == 1)
     {
         const char *msg = "NOT ENOUGH ATOMS\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
@@ -276,15 +298,17 @@ int handle_stdin_client(AtomWarehouse *w)
 
     // Attempt to deliver molecules
     int result = get_amount_to_gen(warehouse, molecule, amount);
+
 }
 int get_amount_to_gen(AtomWarehouse *w, const char *molecule)
 {
     if (strcmp(molecule, "SOFT DRING") == 0)
     {
+        
         bool flag = True;
         int i = 0;
         while (flag)
-            if (deliver_molecules(w, "WATER", i) == deliver_molecules(w, "CARBON DIOXIDE"))
+            if (check_molecules(w, "WATER"),check_molecules(w, "CARBON DIOXIDE"),check_molecules(w,"GLUCOSE"))
                 return -1; // Not enough atoms to create water
 
         w->hydrogen -= 2 * amount;
