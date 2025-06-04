@@ -5,18 +5,44 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <getopt.h>
 
 #define BUFFER_SIZE 1024
 
+// Global variables for command line options
+extern int optopt;
+extern char *optarg;
+
 int main(int argc, char *argv[]) {
-    // Check if the correct number of arguments is provided
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <hostname> <port>\n", argv[0]);
+    const char *hostname = NULL;
+    const char *port = NULL;
+
+    while (1) {
+        int ret = getopt(argc, argv, "h:p:");
+
+        if (ret == -1)
+        {
+            break;
+        }
+
+        switch (ret) {
+            case 'h':
+                hostname = optarg;
+                break;
+            case 'p':
+                port = optarg;
+                break;
+            case '?':
+                printf("Usage: %s -h <hostname/IP> -p <port>\n", argv[0]);
+                exit(EXIT_FAILURE);
+        }
+    }
+
+    if (!hostname || !port) {
+        printf("Error: -h <hostname/IP> and -p <port> are required.\n");
         exit(EXIT_FAILURE);
     }
 
-    const char *hostname = argv[1]; // Hostname or IP address of the server
-    const char *port = argv[2]; // Port number to connect to
     char message[BUFFER_SIZE]; // Buffer to hold the message to send
     
     // Resolve hostname
