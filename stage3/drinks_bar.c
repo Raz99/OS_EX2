@@ -307,16 +307,22 @@ void handle_stdin(AtomWarehouse *w)
 
 int main(int argc, char *argv[]) {
     // Check if the correct number of arguments is provided
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <TCP port> <UDP port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    int port = atoi(argv[1]); // Convert the port argument to an integer
+    int tcp_port = atoi(argv[1]); // Convert the port argument to an integer
+    int udp_port = atoi(argv[2]); // Convert the port argument to an integer
 
     // Validate the port number
-    if (port <= 0 || port > 65535) {
+    if (tcp_port <= 0 || tcp_port > 65535) {
         fprintf(stderr, "Invalid port number: %s\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
+    if (udp_port <= 0 || udp_port > 65535) {
+        fprintf(stderr, "Invalid port number: %s\n", argv[2]);
         exit(EXIT_FAILURE);
     }
 
@@ -354,22 +360,29 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in address = {0}; // Initialize the address structure
-    socklen_t addrlen = sizeof(address);// Size of the address structure
-    address.sin_family = AF_INET; // Set the address family to IPv4
-    address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
-    address.sin_port = htons(port); // Convert the port number to network byte order
+    struct sockaddr_in tcp_address = {0}; // Initialize the address structure
+    socklen_t tcp_addrlen = sizeof(tcp_address);// Size of the address structure
+    tcp_address.sin_family = AF_INET; // Set the address family to IPv4
+    tcp_address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
+    tcp_address.sin_port = htons(tcp_port); // Convert the port number to network byte order
 
     // Bind the socket to the address and port (TCP)
-    if (bind(tcp_listener, (struct sockaddr *)&address, addrlen) < 0) {
+    if (bind(tcp_listener, (struct sockaddr *)&tcp_address, tcp_addrlen) < 0) {
         perror("bind");
         close(tcp_listener); // Close the TCP socket
         close(udp_listener); // Close the UDP socket
         exit(EXIT_FAILURE);
     }
 
+    // For UDP binding, create a new address structure
+    struct sockaddr_in udp_address = {0}; // Initialize UDP address structure
+    socklen_t udp_addrlen = sizeof(udp_address);// Size of the address structure
+    udp_address.sin_family = AF_INET;     // Set the address family to IPv4
+    udp_address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
+    udp_address.sin_port = htons(udp_port); // Use the UDP port number
+
     // Bind the socket to the address and port (UDP)
-    if (bind(udp_listener, (struct sockaddr *)&address, addrlen) < 0)
+    if (bind(udp_listener, (struct sockaddr *)&udp_address, udp_addrlen) < 0)
     {
         perror("bind");
         close(tcp_listener); // Close the TCP socket
@@ -406,7 +419,7 @@ int main(int argc, char *argv[]) {
     fds[2].fd = STDIN_FILENO; // The third element is the standard input for commands
     fds[2].events = POLLIN; // Set the stdin to poll for incoming data
 
-    printf("atom_warehouse server started on port %d (Use CTRL+C to shut down)\n", port); // Print server start message
+    printf("drinks_bar server started on TCP port %d, UDP port %d (Use CTRL+C to shut down)\n", tcp_port, udp_port);
 
     // Main loop to accept and handle client connections
     while (running) {
