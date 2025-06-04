@@ -6,6 +6,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #define BUFFER_SIZE 1024
 
@@ -87,7 +89,7 @@ int main(int argc, char *argv[]) {
     }
     
     // Create the socket
-    int sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     
     // Check if the socket was created successfully
     if (sockfd < 0) {

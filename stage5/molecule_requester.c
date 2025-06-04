@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/un.h>
+#include <sys/socket.h>
 
 #define BUFFER_SIZE 1024
 
