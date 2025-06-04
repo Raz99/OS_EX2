@@ -6,16 +6,19 @@
 #include <poll.h>
 #include <signal.h>
 #include <getopt.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #define BUFFER_SIZE 1024 // Size of the buffer for reading client requests
 
 // Global variables
 extern int optopt;
 extern char *optarg;
+int tcp_listener = -1, udp_listener = -1;
+int uds_stream_listener = -1, uds_dgram_fd = -1;
+char *stream_path = NULL, *datagram_path = NULL; // Paths for UDS sockets
 struct pollfd *fds = NULL; // Array of file descriptors for polling
-int nfds = 3; // Number of valid file descriptors
-int tcp_listener = -1;
-int udp_listener = -1;
+int nfds = 3; // Number of valid file descriptors;
 int running = 1;
 
 // Clean up: close all client sockets and free resources
@@ -28,6 +31,9 @@ void cleanup() {
         }
     }
     free(fds); // Free the allocated memory for file descriptors
+    
+    if(stream_path) unlink(stream_path); // Remove the UDS stream socket file
+    if(datagram_path) unlink(datagram_path); // Remove the UDS datagram socket file
 }
 
 // Signal handler for graceful shutdown
@@ -194,7 +200,7 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse)
     // Check if the command is valid
     if (parsed != 3 || strcmp(command, "DELIVER") != 0)
     {
-        printf("Invalid UDP command: %s\n", buffer);
+        printf("UDP: Invalid command: %s\n", buffer);
         const char *msg = "ERROR: Invalid command\n";
         sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
         return;
@@ -234,9 +240,77 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse)
     print_status(warehouse); // Print the current status of the warehouse
 }
 
+void handle_uds_datagram_client(int fd, AtomWarehouse *warehouse)
+{
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+    struct sockaddr_un client_addr;
+    socklen_t addrlen = sizeof(client_addr);
+
+    // Read data from the client (leaving space for null terminator)
+    int bytes = recvfrom(fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
+
+    if (bytes <= 0)
+    {
+        perror("recvfrom");
+        close(fd);
+        return;
+    }
+
+    buffer[bytes] = '\0'; // Ensure null-termination of the received string
+
+    // Parse command for DELIVER
+    char command[16], molecule[32];
+    unsigned long long amount;
+
+    // Used %[^0-9] to read everything that's not a digit as molecule name
+    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+
+    // Check if the command is valid
+    if (parsed != 3 || strcmp(command, "DELIVER") != 0)
+    {
+        printf("UDS datagram: Invalid command: %s\n", buffer);
+        const char *msg = "ERROR: Invalid command\n";
+        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        return;
+    }
+
+    // Trim trailing spaces from molecule name
+    int len = strlen(molecule);
+    while (len > 0 && molecule[len - 1] == ' ')
+    {
+        molecule[--len] = '\0';
+    }
+
+    // Attempt to deliver molecules
+    int result = deliver_molecules(warehouse, molecule, amount);
+
+    if (result == 0)
+    {
+        const char *msg = "DELIVERED\n";
+        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        printf("UDS datagram: Delivered %llu %s molecules\n", amount, molecule);
+    }
+
+    else if (result == 1)
+    {
+        const char *msg = "ERROR: Unknown molecule type\n";
+        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        printf("UDS datagram: Unknown molecule type: %s\n", molecule);
+    }
+
+    else if (result == -1)
+    {
+        const char *msg = "NOT ENOUGH ATOMS\n";
+        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        printf("UDS datagram: Not enough atoms for %llu %s molecules\n", amount, molecule);
+    }
+
+    print_status(warehouse); // Print the current status of the warehouse
+}
+
 int handle_tcp_or_uds_stream_client(int fd, AtomWarehouse *warehouse)
 {
-    char buffer[BUFFER_SIZE] = {0};                     // Buffer to hold the incoming data
+    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
 
     // In case of an error or no data read, close the connection
@@ -246,26 +320,26 @@ int handle_tcp_or_uds_stream_client(int fd, AtomWarehouse *warehouse)
         return 1; // Connection closed
     }
 
-    char command[16], atom[16];                                            // Buffers for command and atom type
-    unsigned long long amount;                                             // Variable to hold the amount of atoms
+    char command[16], atom[16]; // Buffers for command and atom type
+    unsigned long long amount; // Variable to hold the amount of atoms
     int parsed = sscanf(buffer, "%15s %15s %llu", command, atom, &amount); // Parse the command, atom type, and amount from the buffer
 
     // Check if the command is valid
     if (parsed != 3 || strcmp(command, "ADD") != 0)
     {
-        printf("Invalid TCP command: %s", buffer);
+        printf("TCP / UDS stream: Invalid command: %s", buffer);
         return 0; // Connection still open
     }
 
     // Check if the amount is valid
     if (add_atoms(warehouse, atom, amount))
     {
-        printf("TCP: Unknown atom type: %s\n", atom);
+        printf("TCP / UDS stream: Unknown atom type: %s\n", atom);
         return 0; // Connection still open
     }
 
     print_status(warehouse); // Print the current status of the warehouse
-    return 0;                // Connection still open
+    return 0; // Connection still open
 }
 
 int min3(int a, int b, int c)
@@ -382,11 +456,13 @@ int main(int argc, char *argv[])
         {"carbon", required_argument, NULL, 'c'},
         {"hydrogen", required_argument, NULL, 'h'},
         {"timeout", required_argument, NULL, 't'},
+        {"stream-path", required_argument, 0, 's'},
+        {"datagram-path", required_argument, 0, 'd'},
         {0, 0, 0, 0}};
 
     while (1)
     {
-        int ret = getopt_long(argc, argv, "T:U:o:c:h:t:", long_options, NULL);
+        int ret = getopt_long(argc, argv, "T:U:o:c:h:t:s:d:", long_options, NULL);
 
         if (ret == -1)
         {
@@ -413,29 +489,199 @@ int main(int argc, char *argv[])
         case 't':
             timeout = atoi(optarg);
             break;
+        case 's':
+            stream_path = strdup(optarg); // Duplicate the string so it can be used after optarg is modified 
+            break;
+        case 'd':
+            datagram_path = strdup(optarg); // Duplicate the string so it can be used after optarg is modified 
+            break;
         case '?':
             printf("Unknown option: %c\n", optopt);
             exit(EXIT_FAILURE);
         }
     }
 
-    if (tcp_port == -1 || udp_port == -1)
+    if ((tcp_port == -1 && stream_path == NULL) || (udp_port == -1 && datagram_path == NULL))
     {
-        printf("Error: -T / --tcp-port and -U / --udp-port are required.\n");
+        // If neither TCP nor UDP ports are specified, print an error message and exit
+        printf("You must specify at least one of the following (from each line):\n");
+        printf("  -T / --tcp-port <port> or -s / --stream-path <path>\n");
+        printf("  -U / --udp-port <port> or -d / --datagram-path <path>\n");
         exit(EXIT_FAILURE);
     }
 
-    // Validate the port number
-    if (tcp_port <= 0 || tcp_port > 65535)
-    {
-        fprintf(stderr, "Invalid port number: %d\n", tcp_port);
-        exit(EXIT_FAILURE);
+    if(tcp_port != -1) {
+        // Validate the port number
+        if (tcp_port <= 0 || tcp_port > 65535)
+        {
+            fprintf(stderr, "Invalid port number: %d\n", tcp_port);
+            exit(EXIT_FAILURE);
+        }
+
+        tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
+
+        // Check if the socket was created successfully
+        if (tcp_listener < 0)
+        {
+            perror("socket");
+            exit(EXIT_FAILURE);
+        }
+
+        // Set socket option to reuse address to avoid "address already in use"
+        int opt = 1;
+        if (setsockopt(tcp_listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        {
+            perror("setsockopt");
+            close(tcp_listener);
+            exit(EXIT_FAILURE);
+        }
+
+        struct sockaddr_in tcp_address = {0}; // Initialize the address structure
+        socklen_t tcp_addrlen = sizeof(tcp_address); // Size of the address structure
+        tcp_address.sin_family = AF_INET; // Set the address family to IPv4
+        tcp_address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
+        tcp_address.sin_port = htons(tcp_port); // Convert the port number to network byte order
+
+        // Bind the socket to the address and port (TCP)
+        if (bind(tcp_listener, (struct sockaddr *)&tcp_address, tcp_addrlen) < 0)
+        {
+            perror("bind");
+            close(tcp_listener); // Close the TCP socket
+            exit(EXIT_FAILURE);
+        }
+
+        // Set the socket to listen for incoming connections (TCP)
+        if (listen(tcp_listener, SOMAXCONN) < 0)
+        { // SOMAXCONN is the maximum queue length for pending connections
+            perror("listen");
+            close(tcp_listener);
+            exit(EXIT_FAILURE);
+        }
     }
 
-    if (udp_port <= 0 || udp_port > 65535)
-    {
-        fprintf(stderr, "Invalid port number: %d\n", udp_port);
-        exit(EXIT_FAILURE);
+    if(udp_port != -1) {
+        // Validate the port number
+        if (udp_port <= 0 || udp_port > 65535)
+        {
+            fprintf(stderr, "Invalid port number: %d\n", udp_port);
+            exit(EXIT_FAILURE);
+        }
+
+        udp_listener = socket(AF_INET, SOCK_DGRAM, 0); // Create a UDP socket
+
+        // Check if the UDP socket was created successfully
+        if (udp_listener < 0)
+        {
+            perror("socket");
+            if (tcp_listener >= 0) {
+                close(tcp_listener); // Close the TCP socket if UDP socket creation failed
+            }
+            close(udp_listener); // Close the UDP socket
+            exit(EXIT_FAILURE);
+        }
+
+        // For UDP binding, create a new address structure
+        struct sockaddr_in udp_address = {0};        // Initialize UDP address structure
+        socklen_t udp_addrlen = sizeof(udp_address); // Size of the address structure
+        udp_address.sin_family = AF_INET;            // Set the address family to IPv4
+        udp_address.sin_addr.s_addr = INADDR_ANY;    // Bind to any available address
+        udp_address.sin_port = htons(udp_port);      // Use the UDP port number
+
+        // Bind the socket to the address and port (UDP)
+        if (bind(udp_listener, (struct sockaddr *)&udp_address, udp_addrlen) < 0)
+        {
+            perror("bind");
+            if (tcp_listener >= 0) {
+                close(tcp_listener); // Close the TCP socket if UDP socket creation failed
+            }
+            close(udp_listener); // Close the UDP socket
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (stream_path) {
+        int stream_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (stream_fd < 0) {
+            perror("socket (UDS stream)");
+            // Clean up any previously created sockets
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            exit(EXIT_FAILURE);
+        }
+        
+        struct sockaddr_un stream_addr = {0};
+        stream_addr.sun_family = AF_UNIX;
+        
+        // Check if path is too long
+        if (strlen(stream_path) >= sizeof(stream_addr.sun_path)) {
+            fprintf(stderr, "UDS stream path too long: %s\n", stream_path);
+            close(stream_fd);
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            exit(EXIT_FAILURE);
+        }
+        
+        strncpy(stream_addr.sun_path, stream_path, sizeof(stream_addr.sun_path)-1);
+        unlink(stream_path); // Remove existing socket file (ignore errors here)
+        
+        if (bind(stream_fd, (struct sockaddr*)&stream_addr, sizeof(stream_addr)) < 0) {
+            perror("bind (UDS stream)");
+            close(stream_fd);
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            exit(EXIT_FAILURE);
+        }
+        
+        if (listen(stream_fd, SOMAXCONN) < 0) {
+            perror("listen (UDS stream)");
+            close(stream_fd);
+            unlink(stream_path); // Clean up the socket file
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            exit(EXIT_FAILURE);
+        }
+    
+        uds_stream_listener = stream_fd; // Store the socket descriptor
+    }
+
+    if (datagram_path) {
+        int dgram_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (dgram_fd < 0) {
+            perror("socket (UDS datagram)");
+            // Clean up any previously created sockets
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            if (uds_stream_listener >= 0) close(uds_stream_listener);
+            exit(EXIT_FAILURE);
+        }
+        
+        struct sockaddr_un dgram_addr = {0};
+        dgram_addr.sun_family = AF_UNIX;
+        
+        // Check if path is too long
+        if (strlen(datagram_path) >= sizeof(dgram_addr.sun_path)) {
+            fprintf(stderr, "UDS datagram path too long: %s\n", datagram_path);
+            close(dgram_fd);
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            if (uds_stream_listener >= 0) close(uds_stream_listener);
+            exit(EXIT_FAILURE);
+        }
+        
+        strncpy(dgram_addr.sun_path, datagram_path, sizeof(dgram_addr.sun_path)-1); // Ensure null termination
+        unlink(datagram_path); // Remove the socket file if it already exists (must be done before binding)
+        
+        if (bind(dgram_fd, (struct sockaddr*)&dgram_addr, sizeof(dgram_addr)) < 0) { // Bind the socket to the address
+            perror("bind (UDS datagram)");
+            close(dgram_fd);
+            if (tcp_listener >= 0) close(tcp_listener);
+            if (udp_listener >= 0) close(udp_listener);
+            if (uds_stream_listener >= 0) close(uds_stream_listener);
+            unlink(datagram_path); // Clean up the socket file
+            exit(EXIT_FAILURE);
+        }
+        
+        uds_dgram_fd = dgram_fd; // Store the socket descriptor
     }
 
     AtomWarehouse warehouse = {carbon, oxygen, hydrogen}; // Initialize the warehouse with zero atoms
@@ -444,93 +690,45 @@ int main(int argc, char *argv[])
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
-
-    // Check if the socket was created successfully
-    if (tcp_listener < 0)
-    {
-        perror("socket");
-        exit(EXIT_FAILURE);
-    }
-
-    // Set socket option to reuse address to avoid "address already in use"
-    int opt = 1;
-    if (setsockopt(tcp_listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-    {
-        perror("setsockopt");
-        close(tcp_listener);
-        exit(EXIT_FAILURE);
-    }
-
-    udp_listener = socket(AF_INET, SOCK_DGRAM, 0); // Create a UDP socket
-
-    // Check if the UDP socket was created successfully
-    if (udp_listener < 0)
-    {
-        perror("socket");
-        close(tcp_listener); // Close the TCP socket if UDP socket creation failed
-        close(udp_listener); // Close the UDP socket
-        exit(EXIT_FAILURE);
-    }
-
-    struct sockaddr_in tcp_address = {0}; // Initialize the address structure
-    socklen_t tcp_addrlen = sizeof(tcp_address); // Size of the address structure
-    tcp_address.sin_family = AF_INET; // Set the address family to IPv4
-    tcp_address.sin_addr.s_addr = INADDR_ANY; // Bind to any available address
-    tcp_address.sin_port = htons(tcp_port); // Convert the port number to network byte order
-
-    // Bind the socket to the address and port (TCP)
-    if (bind(tcp_listener, (struct sockaddr *)&tcp_address, tcp_addrlen) < 0)
-    {
-        perror("bind");
-        close(tcp_listener); // Close the TCP socket
-        close(udp_listener); // Close the UDP socket
-        exit(EXIT_FAILURE);
-    }
-
-    // For UDP binding, create a new address structure
-    struct sockaddr_in udp_address = {0};        // Initialize UDP address structure
-    socklen_t udp_addrlen = sizeof(udp_address); // Size of the address structure
-    udp_address.sin_family = AF_INET;            // Set the address family to IPv4
-    udp_address.sin_addr.s_addr = INADDR_ANY;    // Bind to any available address
-    udp_address.sin_port = htons(udp_port);      // Use the UDP port number
-
-    // Bind the socket to the address and port (UDP)
-    if (bind(udp_listener, (struct sockaddr *)&udp_address, udp_addrlen) < 0)
-    {
-        perror("bind");
-        close(tcp_listener); // Close the TCP socket
-        close(udp_listener); // Close the UDP socket
-        exit(EXIT_FAILURE);
-    }
-
-    // Set the socket to listen for incoming connections (TCP)
-    if (listen(tcp_listener, SOMAXCONN) < 0)
-    { // SOMAXCONN is the maximum queue length for pending connections
-        perror("listen");
-        close(tcp_listener);
-        close(udp_listener);
-        exit(EXIT_FAILURE);
-    }
-
     // Allocate memory for the poll file descriptors
     int fds_capacity = 10;
     fds = malloc(fds_capacity * sizeof(struct pollfd));
     if (!fds)
     {
         perror("malloc");
-        close(tcp_listener);
-        close(udp_listener);
+
+        if (tcp_listener >= 0) close(tcp_listener); // Close the TCP listener if it was created
+        else if (stream_path) unlink(stream_path); // Remove the UDS stream socket file if it was created
+        
+        if (udp_listener >= 0) close(udp_listener); // Close the UDP listener if it was created
+        else if (datagram_path) unlink(datagram_path); // Remove the UDS datagram socket file if it was created
+        
         exit(EXIT_FAILURE);
     }
 
     // Initialize the array to zero out all fields including revents
     memset(fds, 0, fds_capacity * sizeof(struct pollfd));
 
-    fds[0].fd = tcp_listener; // The first element is the listener socket
-    fds[0].events = POLLIN;   // Set the listener to poll for incoming connections
-    fds[1].fd = udp_listener; // The second element is the UDP socket for incoming data
-    fds[1].events = POLLIN;   // Set the UDP listener to poll for incoming data
+    if(tcp_listener >= 0) {
+        fds[0].fd = tcp_listener; // The first element is the listener socket
+        fds[0].events = POLLIN;   // Set the listener to poll for incoming connections
+    }
+
+    else if(uds_stream_listener >= 0) {
+        fds[0].fd = uds_stream_listener; // The fourth element is the UDS stream socket for incoming data
+        fds[0].events = POLLIN; // Set the UDS stream listener to poll for incoming data
+    }
+
+    if(udp_listener >= 0) {
+        fds[1].fd = udp_listener; // The second element is the UDP socket for incoming data
+        fds[1].events = POLLIN;   // Set the UDP listener to poll for incoming data
+    }
+
+    else if (uds_dgram_fd >= 0) {
+        fds[1].fd = uds_dgram_fd; // The fifth element is the UDS datagram socket for incoming data
+        fds[1].events = POLLIN;   // Set the UDS datagram listener to poll for incoming data
+    }
+
     fds[2].fd = STDIN_FILENO; // The third element is the standard input for commands
     fds[2].events = POLLIN;   // Set the stdin to poll for incoming data
 
@@ -557,11 +755,11 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        // Check if the listener socket has incoming connections
+        // Check if the TCP or UDS stream listener socket has incoming connections
         if (fds[0].revents & POLLIN)
         {
             if(timeout > 0) alarm(timeout); // Reset the alarm for timeout
-            int client_fd = accept(tcp_listener, NULL, NULL); // Accept a new client connection
+            int client_fd = accept(fds[0].fd, NULL, NULL); // Accept a new client connection
 
             // Check if the accept was successful
             if (client_fd < 0)
@@ -591,10 +789,17 @@ int main(int argc, char *argv[])
         }
 
         // Check if the UDP listener socket has incoming connections
-        if (fds[1].revents & POLLIN)
+        if (fds[1].revents & POLLIN && udp_listener >= 0)
         {
             if(timeout > 0) alarm(timeout); // Reset the alarm for timeout
             handle_udp_client(udp_listener, &warehouse);
+        }
+
+        // Check if the UDS stream listener socket has incoming connections
+        else if (fds[1].revents & POLLIN && uds_dgram_fd >= 0)
+        {
+            if(timeout > 0) alarm(timeout); // Reset the alarm for timeout
+            handle_uds_datagram_client(uds_dgram_fd, &warehouse);
         }
 
         // Check if the stdin has data to read

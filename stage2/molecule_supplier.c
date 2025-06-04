@@ -145,7 +145,7 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse) {
 }
 
 
-int handle_tcp_client(int fd, AtomWarehouse *warehouse)
+int handle_tcp_or_uds_stream_client(int fd, AtomWarehouse *warehouse)
 {
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
@@ -206,7 +206,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    int tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
+    tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
 
     // Check if the socket was created successfully
     if (tcp_listener < 0)
@@ -343,7 +343,7 @@ int main(int argc, char *argv[]) {
         for (int i = 2; i < nfds; i++) {
             // Check if this fd has data to read
             if (fds[i].revents & POLLIN) {
-                int connection_closed = handle_tcp_client(fds[i].fd, &warehouse); // Handle the client request
+                int connection_closed = handle_tcp_or_uds_stream_client(fds[i].fd, &warehouse); // Handle the client request
                 
                 if (connection_closed) {
                     // Shift remaining elements to fill the gap
