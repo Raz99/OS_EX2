@@ -88,15 +88,30 @@ void handle_timeout(int sig)
     exit(0);
 }
 
-void print_status(AtomWarehouse *w)
+void print_status() 
 {
+    struct flock lock;
+    
+    if (fd >= 0) {
+        lock.l_type = F_RDLCK;
+        lock.l_whence = SEEK_SET;
+        lock.l_start = 0;
+        lock.l_len = sizeof(AtomWarehouse);
+        fcntl(fd, F_SETLKW, &lock);
+    }
+    
     printf("Atom Warehouse Status:\n");
-    printf("Carbon: %llu\n", w->carbon);
-    printf("Oxygen: %llu\n", w->oxygen);
-    printf("Hydrogen: %llu\n", w->hydrogen);
+    printf("Carbon: %llu\n", warehouse->carbon);
+    printf("Oxygen: %llu\n", warehouse->oxygen);
+    printf("Hydrogen: %llu\n", warehouse->hydrogen);
+
+    if (fd>=0) {
+        lock.l_type = F_UNLCK;
+        fcntl(fd, F_SETLKW, &lock);
+    }
 }
 
-int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount)
+int add_atoms(const char *atom, unsigned long long amount)
 {
     if (fd >= 0) {
         struct flock lock = {
@@ -109,11 +124,11 @@ int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount)
         fcntl(fd, F_SETLKW, &lock); // Lock the file for writing
 
         if (strcmp(atom, "CARBON") == 0)
-            w->carbon += amount;
+            warehouse->carbon += amount;
         else if (strcmp(atom, "OXYGEN") == 0)
-            w->oxygen += amount;
+            warehouse->oxygen += amount;
         else if (strcmp(atom, "HYDROGEN") == 0)
-            w->hydrogen += amount;
+            warehouse->hydrogen += amount;
         else
             return 1; // Unknown atom type
 
@@ -127,25 +142,25 @@ int add_atoms(AtomWarehouse *w, const char *atom, unsigned long long amount)
     // If file descriptor is not set, just update the warehouse in memory
     else {
         if (strcmp(atom, "CARBON") == 0)
-            w->carbon += amount;
+            warehouse->carbon += amount;
         else if (strcmp(atom, "OXYGEN") == 0)
-            w->oxygen += amount;
+            warehouse->oxygen += amount;
         else if (strcmp(atom, "HYDROGEN") == 0)
-            w->hydrogen += amount;
+            warehouse->hydrogen += amount;
         else
             return 1; // Unknown atom type
         return 0;
     }
 }
 
-int get_amount_of_molecules(AtomWarehouse *w, const char *molecule)
+int get_amount_of_molecules(const char *molecule)
 {
     int res = 0; // Initialize the result to 0
 
     // Check the type of molecule and calculate the maximum number that can be created
     if (strcmp(molecule, "WATER") == 0)
     {
-        while (w->hydrogen >= 2 * (res + 1) && w->oxygen >= (res + 1))
+        while (warehouse->hydrogen >= 2 * (res + 1) && warehouse->oxygen >= (res + 1))
         {
             res++;
         }
@@ -153,7 +168,7 @@ int get_amount_of_molecules(AtomWarehouse *w, const char *molecule)
 
     else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
     {
-        while (w->carbon >= (res + 1) && w->oxygen >= 2 * (res + 1))
+        while (warehouse->carbon >= (res + 1) && warehouse->oxygen >= 2 * (res + 1))
         {
             res++;
         }
@@ -161,7 +176,7 @@ int get_amount_of_molecules(AtomWarehouse *w, const char *molecule)
 
     else if (strcmp(molecule, "ALCOHOL") == 0)
     {
-        while (w->carbon >= 2 * (res + 1) && w->hydrogen >= 6 * (res + 1) && w->oxygen >= (res + 1))
+        while (warehouse->carbon >= 2 * (res + 1) && warehouse->hydrogen >= 6 * (res + 1) && warehouse->oxygen >= (res + 1))
         {
             res++;
         }
@@ -169,7 +184,7 @@ int get_amount_of_molecules(AtomWarehouse *w, const char *molecule)
 
     else if (strcmp(molecule, "GLUCOSE") == 0)
     {
-        while (w->carbon >= 6 * (res + 1) && w->hydrogen >= 12 * (res + 1) && w->oxygen >= 6 * (res + 1))
+        while (warehouse->carbon >= 6 * (res + 1) && warehouse->hydrogen >= 12 * (res + 1) && warehouse->oxygen >= 6 * (res + 1))
         {
             res++;
         }
@@ -181,7 +196,7 @@ int get_amount_of_molecules(AtomWarehouse *w, const char *molecule)
     return res; // Return the maximum number of molecules that can be created
 }
 
-int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long amount)
+int deliver_molecules(const char *molecule, unsigned long long amount)
 {
     struct flock lock;
     if (fd >= 0) {
@@ -192,7 +207,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
         fcntl(fd, F_SETLKW, &lock); // Lock the file for writing
     }
 
-    int potential_amount = get_amount_of_molecules(w, molecule); // Get the maximum number of molecules that can be created
+    int potential_amount = get_amount_of_molecules(molecule); // Get the maximum number of molecules that can be created
 
     if (potential_amount == -1)
     {
@@ -214,28 +229,28 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
 
     if (strcmp(molecule, "WATER") == 0)
     {
-        w->hydrogen -= 2 * amount;
-        w->oxygen -= amount;
+        warehouse->hydrogen -= 2 * amount;
+        warehouse->oxygen -= amount;
     }
 
     else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
     {
-        w->carbon -= amount;
-        w->oxygen -= 2 * amount;
+        warehouse->carbon -= amount;
+        warehouse->oxygen -= 2 * amount;
     }
 
     else if (strcmp(molecule, "ALCOHOL") == 0)
     {
-        w->carbon -= 2 * amount;
-        w->hydrogen -= 6 * amount;
-        w->oxygen -= amount;
+        warehouse->carbon -= 2 * amount;
+        warehouse->hydrogen -= 6 * amount;
+        warehouse->oxygen -= amount;
     }
 
     else if (strcmp(molecule, "GLUCOSE") == 0)
     {
-        w->carbon -= 6 * amount;
-        w->hydrogen -= 12 * amount;
-        w->oxygen -= 6 * amount;
+        warehouse->carbon -= 6 * amount;
+        warehouse->hydrogen -= 12 * amount;
+        warehouse->oxygen -= 6 * amount;
     }
 
     if (fd >= 0) {
@@ -247,7 +262,7 @@ int deliver_molecules(AtomWarehouse *w, const char *molecule, unsigned long long
     return 0; // Successfully added molecules
 }
 
-void handle_udp_client(int fd, AtomWarehouse *warehouse)
+void handle_udp_client(int fd)
 {
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     struct sockaddr_in client_addr;
@@ -289,7 +304,7 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse)
     }
 
     // Attempt to deliver molecules
-    int result = deliver_molecules(warehouse, molecule, amount);
+    int result = deliver_molecules(molecule, amount);
 
     if (result == 0)
     {
@@ -312,10 +327,10 @@ void handle_udp_client(int fd, AtomWarehouse *warehouse)
         printf("UDP: Not enough atoms for %llu %s molecules\n", amount, molecule);
     }
 
-    print_status(warehouse); // Print the current status of the warehouse
+    if(fd == -1) print_status(); // Print the current status of the warehouse
 }
 
-void handle_uds_datagram_client(int fd, AtomWarehouse *warehouse)
+void handle_uds_datagram_client(int fd)
 {
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
     struct sockaddr_un client_addr;
@@ -357,7 +372,7 @@ void handle_uds_datagram_client(int fd, AtomWarehouse *warehouse)
     }
 
     // Attempt to deliver molecules
-    int result = deliver_molecules(warehouse, molecule, amount);
+    int result = deliver_molecules(molecule, amount);
 
     if (result == 0)
     {
@@ -380,10 +395,10 @@ void handle_uds_datagram_client(int fd, AtomWarehouse *warehouse)
         printf("UDS datagram: Not enough atoms for %llu %s molecules\n", amount, molecule);
     }
 
-    print_status(warehouse); // Print the current status of the warehouse
+    print_status(); // Print the current status of the warehouse
 }
 
-int handle_tcp_or_uds_stream_client(int fd, AtomWarehouse *warehouse)
+int handle_tcp_or_uds_stream_client(int fd)
 {
     char buffer[BUFFER_SIZE] = {0};                     // Buffer to hold the incoming data
     int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
@@ -407,14 +422,14 @@ int handle_tcp_or_uds_stream_client(int fd, AtomWarehouse *warehouse)
     }
 
     // Check if the amount is valid
-    if (add_atoms(warehouse, atom, amount))
+    if (add_atoms(atom, amount))
     {
         printf("TCP / UDS stream: Unknown atom type: %s\n", atom);
         return 0; // Connection still open
     }
 
-    print_status(warehouse); // Print the current status of the warehouse
-    return 0;                // Connection still open
+    if(fd == -1) print_status(); // Print the current status of the warehouse
+    return 0; // Connection still open
 }
 
 int min3(int a, int b, int c)
@@ -427,34 +442,34 @@ int min3(int a, int b, int c)
     return min;
 }
 
-int get_amount_to_gen(AtomWarehouse *w, const char *drink)
+int get_amount_to_gen(const char *drink)
 {
     if (strcmp(drink, "SOFT DRINK") == 0)
     {
-        return min3(get_amount_of_molecules(w, "WATER"),
-                    get_amount_of_molecules(w, "CARBON DIOXIDE"),
-                    get_amount_of_molecules(w, "GLUCOSE"));
+        return min3(get_amount_of_molecules("WATER"),
+                    get_amount_of_molecules("CARBON DIOXIDE"),
+                    get_amount_of_molecules("GLUCOSE"));
     }
 
     else if (strcmp(drink, "VODKA") == 0)
     {
-        return min3(get_amount_of_molecules(w, "WATER"),
-                    get_amount_of_molecules(w, "ALCOHOL"),
-                    get_amount_of_molecules(w, "GLUCOSE"));
+        return min3(get_amount_of_molecules("WATER"),
+                    get_amount_of_molecules("ALCOHOL"),
+                    get_amount_of_molecules("GLUCOSE"));
     }
 
     else if (strcmp(drink, "CHAMPAGNE") == 0)
     {
-        return min3(get_amount_of_molecules(w, "WATER"),
-                    get_amount_of_molecules(w, "CARBON DIOXIDE"),
-                    get_amount_of_molecules(w, "ALCOHOL"));
+        return min3(get_amount_of_molecules("WATER"),
+                    get_amount_of_molecules("CARBON DIOXIDE"),
+                    get_amount_of_molecules("ALCOHOL"));
     }
 
     else
         return -1; // Unknown drink type
 }
 
-void handle_stdin(AtomWarehouse *w)
+void handle_stdin()
 {
     char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
 
@@ -511,7 +526,7 @@ void handle_stdin(AtomWarehouse *w)
         fcntl(fd, F_SETLKW, &lock); // Lock the file for reading
     }
 
-    result = get_amount_to_gen(w, drink); // Attempt to generate molecules
+    result = get_amount_to_gen(drink); // Attempt to generate molecules
     
     
     if(fd >= 0) {
@@ -878,8 +893,13 @@ int main(int argc, char *argv[])
         }
 
         AtomWarehouse zero = {0};
-        write(fd, &zero, sizeof(AtomWarehouse)); // Ensures file size
-        lseek(fd, 0, SEEK_SET);
+        off_t size = lseek(fd, 0, SEEK_END);  // Move to end to check size
+        if (size < sizeof(AtomWarehouse)) {
+            // File is empty or too small – initialize once
+            lseek(fd, 0, SEEK_SET);
+            write(fd, &zero, sizeof(AtomWarehouse));
+        }
+        lseek(fd, 0, SEEK_SET);  // Always reset to start before mmap
 
         warehouse = mmap(NULL, sizeof(AtomWarehouse),
                         PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -971,7 +991,7 @@ int main(int argc, char *argv[])
     {
         printf("UDS datagram server started on path: %s\n", datagram_path);
     }
-    print_status(&warehouse); // Print the initial status of the warehouse
+    print_status(); // Print the initial status of the warehouse
 
     if (timeout > 0)
     {
@@ -992,6 +1012,20 @@ int main(int argc, char *argv[])
         {
             perror("poll");
             continue;
+        }
+
+        static AtomWarehouse prev_snapshot = {0};
+        static int first_time = 1;
+
+        if (first_time) {
+            prev_snapshot = *warehouse;
+            first_time = 0;
+        }
+        
+        else if (memcmp(&prev_snapshot, warehouse, sizeof(AtomWarehouse)) != 0) {
+            printf("[Update detected] Warehouse changed\n");
+            print_status();
+            prev_snapshot = *warehouse;
         }
 
         // Check if the TCP or UDS stream listener socket has incoming connections
@@ -1033,7 +1067,7 @@ int main(int argc, char *argv[])
         {
             if (timeout > 0)
                 alarm(timeout); // Reset the alarm for timeout
-            handle_udp_client(udp_listener, &warehouse);
+            handle_udp_client(udp_listener);
         }
 
         // Check if the UDS stream listener socket has incoming connections
@@ -1041,7 +1075,7 @@ int main(int argc, char *argv[])
         {
             if (timeout > 0)
                 alarm(timeout); // Reset the alarm for timeout
-            handle_uds_datagram_client(uds_dgram_fd, &warehouse);
+            handle_uds_datagram_client(uds_dgram_fd);
         }
 
         // Check if the stdin has data to read
@@ -1049,7 +1083,7 @@ int main(int argc, char *argv[])
         {
             if (timeout > 0)
                 alarm(timeout); // Reset the alarm for timeout
-            handle_stdin(&warehouse);
+            handle_stdin();
         }
 
         // Iterate through the file descriptors to handle client requests
@@ -1059,7 +1093,7 @@ int main(int argc, char *argv[])
             if (fds[i].revents & POLLIN)
             {
                 alarm(timeout);
-                int connection_closed = handle_tcp_or_uds_stream_client(fds[i].fd, &warehouse); // Handle the client request
+                int connection_closed = handle_tcp_or_uds_stream_client(fds[i].fd); // Handle the client request
 
                 if (connection_closed)
                 {
