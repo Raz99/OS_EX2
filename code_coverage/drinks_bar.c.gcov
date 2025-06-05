@@ -1,0 +1,1130 @@
+        -:    0:Source:drinks_bar.c
+        -:    0:Graph:drinks_bar.gcno
+        -:    0:Data:drinks_bar.gcda
+        -:    0:Runs:67
+        -:    1:#include <stdio.h>
+        -:    2:#include <stdlib.h>
+        -:    3:#include <string.h>
+        -:    4:#include <unistd.h>
+        -:    5:#include <netinet/in.h>
+        -:    6:#include <poll.h>
+        -:    7:#include <signal.h>
+        -:    8:#include <getopt.h>
+        -:    9:#include <sys/socket.h>
+        -:   10:#include <sys/un.h>
+        -:   11:#include <stdbool.h>
+        -:   12:#include <sys/file.h>
+        -:   13:#include <fcntl.h> // fcntl, open, struct flock
+        -:   14:#include <sys/mman.h> // mmap, munmap
+        -:   15:#include <sys/stat.h> // ftruncate, S_IRUSR and such
+        -:   16:#include <sys/types.h> // off_t and such
+        -:   17:
+        -:   18:#define BUFFER_SIZE 1024 // Size of the buffer for reading client requests
+        -:   19:
+        -:   20:// Global variables
+        -:   21:extern int optopt;
+        -:   22:extern char *optarg;
+        -:   23:int tcp_listener = -1, udp_listener = -1;
+        -:   24:int uds_stream_listener = -1, uds_dgram_fd = -1;
+        -:   25:char *stream_path = NULL, *datagram_path = NULL; // Paths for UDS sockets
+        -:   26:struct pollfd *fds = NULL; // Array of file descriptors for polling
+        -:   27:int nfds = 3; // Number of valid file descriptors;
+        -:   28:int running = 1;
+        -:   29:
+        -:   30:typedef struct
+        -:   31:{
+        -:   32:    unsigned long long carbon;
+        -:   33:    unsigned long long oxygen;
+        -:   34:    unsigned long long hydrogen;
+        -:   35:} AtomWarehouse;
+        -:   36:
+        -:   37:AtomWarehouse *warehouse = NULL; // will point to mapped memory
+        -:   38:int fd = -1; // file descriptor for the save file
+        -:   39:char *save_file_path = NULL; // path to the shared file (if provided)
+        -:   40:
+        -:   41:// Clean up: close all client sockets and free resources
+       34:   42:void cleanup()
+        -:   43:{
+      144:   44:    for (int i = 0; i < nfds; i++)
+        -:   45:    {
+      110:   46:        if (fds[i].fd >= 0)
+        -:   47:        {
+      110:   48:            close(fds[i].fd); // Close each socket
+        -:   49:        }
+        -:   50:    }
+       34:   51:    free(fds); // Free the allocated memory for file descriptors
+        -:   52:
+       34:   53:    if (stream_path)
+        7:   54:        unlink(stream_path); // Remove the UDS stream socket file
+        -:   55:    
+       34:   56:    if (datagram_path)
+        8:   57:        unlink(datagram_path); // Remove the UDS datagram socket file
+        -:   58:
+       34:   59:    if (save_file_path) {
+        8:   60:    munmap(warehouse, sizeof(AtomWarehouse));
+        8:   61:    close(fd);
+        -:   62:    }
+        -:   63:    
+        -:   64:    else {
+       26:   65:        free(warehouse);
+        -:   66:    }
+       34:   67:}
+        -:   68:
+        -:   69:// Signal handler for graceful shutdown
+       32:   70:void handle_signal(int sig)
+        -:   71:{
+       32:   72:    running = 0;
+       32:   73:}
+        -:   74:
+        2:   75:void handle_timeout(int sig)
+        -:   76:{
+        2:   77:    if (tcp_listener >= 0)
+        2:   78:        close(tcp_listener);
+        2:   79:    if (udp_listener >= 0)
+        2:   80:        close(udp_listener);
+        -:   81:
+        2:   82:    if (fds != NULL)
+        -:   83:    {
+        2:   84:        cleanup(fds, 3); // Clean up the file descriptors
+        -:   85:    }
+        -:   86:
+        2:   87:    printf("Server shutting down after timeout.\n");
+        2:   88:    exit(0);
+        -:   89:}
+        -:   90:
+      109:   91:void print_status() 
+        -:   92:{
+        -:   93:    struct flock lock;
+        -:   94:    
+      109:   95:    if (fd >= 0) {
+       17:   96:        lock.l_type = F_RDLCK;
+       17:   97:        lock.l_whence = SEEK_SET;
+       17:   98:        lock.l_start = 0;
+       17:   99:        lock.l_len = sizeof(AtomWarehouse);
+       17:  100:        fcntl(fd, F_SETLKW, &lock);
+        -:  101:    }
+        -:  102:    
+      109:  103:    printf("Atom Warehouse Status:\n");
+      109:  104:    printf("Carbon: %llu\n", warehouse->carbon);
+      109:  105:    printf("Oxygen: %llu\n", warehouse->oxygen);
+      109:  106:    printf("Hydrogen: %llu\n", warehouse->hydrogen);
+        -:  107:
+      109:  108:    if (fd>=0) {
+       17:  109:        lock.l_type = F_UNLCK;
+       17:  110:        fcntl(fd, F_SETLKW, &lock);
+        -:  111:    }
+      109:  112:}
+        -:  113:
+       50:  114:int add_atoms(const char *atom, unsigned long long amount)
+        -:  115:{
+       50:  116:    if (fd >= 0) {
+        7:  117:        struct flock lock = {
+        -:  118:            .l_type = F_WRLCK,
+        -:  119:            .l_whence = SEEK_SET,
+        -:  120:            .l_start = 0,
+        -:  121:            .l_len = sizeof(AtomWarehouse)
+        -:  122:        };
+        -:  123:
+        7:  124:        fcntl(fd, F_SETLKW, &lock); // Lock the file for writing
+        -:  125:
+        7:  126:        if (strcmp(atom, "CARBON") == 0)
+        3:  127:            warehouse->carbon += amount;
+        4:  128:        else if (strcmp(atom, "OXYGEN") == 0)
+        1:  129:            warehouse->oxygen += amount;
+        3:  130:        else if (strcmp(atom, "HYDROGEN") == 0)
+        2:  131:            warehouse->hydrogen += amount;
+        -:  132:        else
+        1:  133:            return 1; // Unknown atom type
+        -:  134:
+        -:  135:        // Unlock the file after writing
+        6:  136:        lock.l_type = F_UNLCK;
+        6:  137:        fcntl(fd, F_SETLKW, &lock);
+        -:  138:
+        6:  139:        return 0;     // Successfully added atoms
+        -:  140:    }
+        -:  141:
+        -:  142:    // If file descriptor is not set, just update the warehouse in memory
+        -:  143:    else {
+       43:  144:        if (strcmp(atom, "CARBON") == 0)
+       22:  145:            warehouse->carbon += amount;
+       21:  146:        else if (strcmp(atom, "OXYGEN") == 0)
+       10:  147:            warehouse->oxygen += amount;
+       11:  148:        else if (strcmp(atom, "HYDROGEN") == 0)
+       10:  149:            warehouse->hydrogen += amount;
+        -:  150:        else
+        1:  151:            return 1; // Unknown atom type
+       42:  152:        return 0;
+        -:  153:    }
+        -:  154:}
+        -:  155:
+       49:  156:int get_amount_of_molecules(const char *molecule)
+        -:  157:{
+       49:  158:    int res = 0; // Initialize the result to 0
+        -:  159:
+        -:  160:    // Check the type of molecule and calculate the maximum number that can be created
+       49:  161:    if (strcmp(molecule, "WATER") == 0)
+        -:  162:    {
+    11710:  163:        while (warehouse->hydrogen >= 2 * (res + 1) && warehouse->oxygen >= (res + 1))
+        -:  164:        {
+    11691:  165:            res++;
+        -:  166:        }
+        -:  167:    }
+        -:  168:
+       30:  169:    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+        -:  170:    {
+     5189:  171:        while (warehouse->carbon >= (res + 1) && warehouse->oxygen >= 2 * (res + 1))
+        -:  172:        {
+     5181:  173:            res++;
+        -:  174:        }
+        -:  175:    }
+        -:  176:
+       22:  177:    else if (strcmp(molecule, "ALCOHOL") == 0)
+        -:  178:    {
+     2503:  179:        while (warehouse->carbon >= 2 * (res + 1) && warehouse->hydrogen >= 6 * (res + 1) && warehouse->oxygen >= (res + 1))
+        -:  180:        {
+     2495:  181:            res++;
+        -:  182:        }
+        -:  183:    }
+        -:  184:
+       14:  185:    else if (strcmp(molecule, "GLUCOSE") == 0)
+        -:  186:    {
+     1249:  187:        while (warehouse->carbon >= 6 * (res + 1) && warehouse->hydrogen >= 12 * (res + 1) && warehouse->oxygen >= 6 * (res + 1))
+        -:  188:        {
+     1240:  189:            res++;
+        -:  190:        }
+        -:  191:    }
+        -:  192:
+        -:  193:    else
+        5:  194:        return -1; // Unknown molecule type
+        -:  195:
+       44:  196:    return res; // Return the maximum number of molecules that can be created
+        -:  197:}
+        -:  198:
+       34:  199:int deliver_molecules(const char *molecule, unsigned long long amount)
+        -:  200:{
+        -:  201:    struct flock lock;
+       34:  202:    if (fd >= 0) {
+        3:  203:        lock.l_type = F_WRLCK;
+        3:  204:        lock.l_whence = SEEK_SET;
+        3:  205:        lock.l_start = 0;
+        3:  206:        lock.l_len = sizeof(AtomWarehouse);
+        3:  207:        fcntl(fd, F_SETLKW, &lock); // Lock the file for writing
+        -:  208:    }
+        -:  209:
+       34:  210:    int potential_amount = get_amount_of_molecules(molecule); // Get the maximum number of molecules that can be created
+        -:  211:
+       34:  212:    if (potential_amount == -1)
+        -:  213:    {
+        5:  214:        if (fd >= 0) {
+        1:  215:            lock.l_type = F_UNLCK;
+        1:  216:            fcntl(fd, F_SETLKW, &lock);
+        -:  217:        }
+        5:  218:        return 1; // Unknown molecule type
+        -:  219:    }
+        -:  220:
+       29:  221:    else if (potential_amount < amount)
+        -:  222:    {
+       11:  223:        if (fd >= 0) {
+        1:  224:            lock.l_type = F_UNLCK;
+        1:  225:            fcntl(fd, F_SETLKW, &lock);
+        -:  226:        }
+       11:  227:        return -1; // Not enough atoms to create the requested amount of molecules
+        -:  228:    }
+        -:  229:
+       18:  230:    if (strcmp(molecule, "WATER") == 0)
+        -:  231:    {
+        9:  232:        warehouse->hydrogen -= 2 * amount;
+        9:  233:        warehouse->oxygen -= amount;
+        -:  234:    }
+        -:  235:
+        9:  236:    else if (strcmp(molecule, "CARBON DIOXIDE") == 0)
+        -:  237:    {
+        3:  238:        warehouse->carbon -= amount;
+        3:  239:        warehouse->oxygen -= 2 * amount;
+        -:  240:    }
+        -:  241:
+        6:  242:    else if (strcmp(molecule, "ALCOHOL") == 0)
+        -:  243:    {
+        3:  244:        warehouse->carbon -= 2 * amount;
+        3:  245:        warehouse->hydrogen -= 6 * amount;
+        3:  246:        warehouse->oxygen -= amount;
+        -:  247:    }
+        -:  248:
+        3:  249:    else if (strcmp(molecule, "GLUCOSE") == 0)
+        -:  250:    {
+        3:  251:        warehouse->carbon -= 6 * amount;
+        3:  252:        warehouse->hydrogen -= 12 * amount;
+        3:  253:        warehouse->oxygen -= 6 * amount;
+        -:  254:    }
+        -:  255:
+       18:  256:    if (fd >= 0) {
+        -:  257:        // Unlock the file after writing
+        1:  258:        lock.l_type = F_UNLCK;
+        1:  259:        fcntl(fd, F_SETLKW, &lock);
+        -:  260:    }
+        -:  261:
+       18:  262:    return 0; // Successfully added molecules
+        -:  263:}
+        -:  264:
+       30:  265:void handle_udp_client(int fd)
+        -:  266:{
+       30:  267:    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+        -:  268:    struct sockaddr_in client_addr;
+       30:  269:    socklen_t addrlen = sizeof(client_addr);
+        -:  270:
+        -:  271:    // Read data from the client (leaving space for null terminator)
+       30:  272:    int bytes = recvfrom(fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
+        -:  273:
+       30:  274:    if (bytes <= 0)
+        -:  275:    {
+    #####:  276:        perror("recvfrom");
+    #####:  277:        close(fd);
+       4*:  278:        return;
+        -:  279:    }
+        -:  280:
+       30:  281:    buffer[bytes] = '\0'; // Ensure null-termination of the received string
+        -:  282:
+        -:  283:    // Parse command for DELIVER
+        -:  284:    char command[16], molecule[32];
+        -:  285:    unsigned long long amount;
+        -:  286:
+        -:  287:    // Used %[^0-9] to read everything that's not a digit as molecule name
+       30:  288:    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+        -:  289:
+        -:  290:    // Check if the command is valid
+       30:  291:    if (parsed != 3 || strcmp(command, "DELIVER") != 0)
+        -:  292:    {
+        4:  293:        printf("UDP: Invalid command: %s\n", buffer);
+        4:  294:        const char *msg = "ERROR: Invalid command\n";
+        4:  295:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        4:  296:        return;
+        -:  297:    }
+        -:  298:
+        -:  299:    // Trim trailing spaces from molecule name
+       26:  300:    int len = strlen(molecule);
+       52:  301:    while (len > 0 && molecule[len - 1] == ' ')
+        -:  302:    {
+       26:  303:        molecule[--len] = '\0';
+        -:  304:    }
+        -:  305:
+        -:  306:    // Attempt to deliver molecules
+       26:  307:    int result = deliver_molecules(molecule, amount);
+        -:  308:
+       26:  309:    if (result == 0)
+        -:  310:    {
+       13:  311:        const char *msg = "DELIVERED\n";
+       13:  312:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+       13:  313:        printf("UDP: Delivered %llu %s molecules\n", amount, molecule);
+        -:  314:    }
+        -:  315:
+       13:  316:    else if (result == 1)
+        -:  317:    {
+        4:  318:        const char *msg = "ERROR: Unknown molecule type\n";
+        4:  319:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        4:  320:        printf("UDP: Unknown molecule type: %s\n", molecule);
+        -:  321:    }
+        -:  322:
+        9:  323:    else if (result == -1)
+        -:  324:    {
+        9:  325:        const char *msg = "NOT ENOUGH ATOMS\n";
+        9:  326:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        9:  327:        printf("UDP: Not enough atoms for %llu %s molecules\n", amount, molecule);
+        -:  328:    }
+        -:  329:
+      26*:  330:    if(fd == -1) print_status(); // Print the current status of the warehouse
+        -:  331:}
+        -:  332:
+       10:  333:void handle_uds_datagram_client(int fd)
+        -:  334:{
+       10:  335:    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+        -:  336:    struct sockaddr_un client_addr;
+       10:  337:    socklen_t addrlen = sizeof(client_addr);
+        -:  338:
+        -:  339:    // Read data from the client (leaving space for null terminator)
+       10:  340:    int bytes = recvfrom(fd, buffer, BUFFER_SIZE - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
+        -:  341:
+       10:  342:    if (bytes <= 0)
+        -:  343:    {
+    #####:  344:        perror("recvfrom");
+    #####:  345:        close(fd);
+       2*:  346:        return;
+        -:  347:    }
+        -:  348:
+       10:  349:    buffer[bytes] = '\0'; // Ensure null-termination of the received string
+        -:  350:
+        -:  351:    // Parse command for DELIVER
+        -:  352:    char command[16], molecule[32];
+        -:  353:    unsigned long long amount;
+        -:  354:
+        -:  355:    // Used %[^0-9] to read everything that's not a digit as molecule name
+       10:  356:    int parsed = sscanf(buffer, "%15s %31[^0-9] %llu", command, molecule, &amount);
+        -:  357:
+        -:  358:    // Check if the command is valid
+       10:  359:    if (parsed != 3 || strcmp(command, "DELIVER") != 0)
+        -:  360:    {
+        2:  361:        printf("UDS datagram: Invalid command: %s\n", buffer);
+        2:  362:        const char *msg = "ERROR: Invalid command\n";
+        2:  363:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        2:  364:        return;
+        -:  365:    }
+        -:  366:
+        -:  367:    // Trim trailing spaces from molecule name
+        8:  368:    int len = strlen(molecule);
+       16:  369:    while (len > 0 && molecule[len - 1] == ' ')
+        -:  370:    {
+        8:  371:        molecule[--len] = '\0';
+        -:  372:    }
+        -:  373:
+        -:  374:    // Attempt to deliver molecules
+        8:  375:    int result = deliver_molecules(molecule, amount);
+        -:  376:
+        8:  377:    if (result == 0)
+        -:  378:    {
+        5:  379:        const char *msg = "DELIVERED\n";
+        5:  380:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        5:  381:        printf("UDS datagram: Delivered %llu %s molecules\n", amount, molecule);
+        -:  382:    }
+        -:  383:
+        3:  384:    else if (result == 1)
+        -:  385:    {
+        1:  386:        const char *msg = "ERROR: Unknown molecule type\n";
+        1:  387:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        1:  388:        printf("UDS datagram: Unknown molecule type: %s\n", molecule);
+        -:  389:    }
+        -:  390:
+        2:  391:    else if (result == -1)
+        -:  392:    {
+        2:  393:        const char *msg = "NOT ENOUGH ATOMS\n";
+        2:  394:        sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&client_addr, addrlen);
+        2:  395:        printf("UDS datagram: Not enough atoms for %llu %s molecules\n", amount, molecule);
+        -:  396:    }
+        -:  397:
+        8:  398:    print_status(); // Print the current status of the warehouse
+        -:  399:}
+        -:  400:
+       83:  401:int handle_tcp_or_uds_stream_client(int fd)
+        -:  402:{
+       83:  403:    char buffer[BUFFER_SIZE] = {0};                     // Buffer to hold the incoming data
+       83:  404:    int bytes_read = read(fd, buffer, BUFFER_SIZE - 1); // Read data from the client (leaving space for null terminator)
+        -:  405:
+        -:  406:    // In case of an error or no data read, close the connection
+       83:  407:    if (bytes_read <= 0)
+        -:  408:    {
+       28:  409:        close(fd);
+       28:  410:        return 1; // Connection closed
+        -:  411:    }
+        -:  412:
+        -:  413:    char command[16], atom[16];                                            // Buffers for command and atom type
+        -:  414:    unsigned long long amount;                                             // Variable to hold the amount of atoms
+       55:  415:    int parsed = sscanf(buffer, "%15s %15s %llu", command, atom, &amount); // Parse the command, atom type, and amount from the buffer
+        -:  416:
+        -:  417:    // Check if the command is valid
+       55:  418:    if (parsed != 3 || strcmp(command, "ADD") != 0)
+        -:  419:    {
+        5:  420:        printf("TCP / UDS stream: Invalid command: %s", buffer);
+        5:  421:        return 0; // Connection still open
+        -:  422:    }
+        -:  423:
+        -:  424:    // Check if the amount is valid
+       50:  425:    if (add_atoms(atom, amount))
+        -:  426:    {
+        2:  427:        printf("TCP / UDS stream: Unknown atom type: %s\n", atom);
+        2:  428:        return 0; // Connection still open
+        -:  429:    }
+        -:  430:
+      48*:  431:    if(fd == -1) print_status(); // Print the current status of the warehouse
+       48:  432:    return 0; // Connection still open
+        -:  433:}
+        -:  434:
+        5:  435:int min3(int a, int b, int c)
+        -:  436:{
+        5:  437:    int min = a;
+        5:  438:    if (b < min)
+        3:  439:        min = b;
+        5:  440:    if (c < min)
+        3:  441:        min = c;
+        5:  442:    return min;
+        -:  443:}
+        -:  444:
+        7:  445:int get_amount_to_gen(const char *drink)
+        -:  446:{
+        7:  447:    if (strcmp(drink, "SOFT DRINK") == 0)
+        -:  448:    {
+        2:  449:        return min3(get_amount_of_molecules("WATER"),
+        -:  450:                    get_amount_of_molecules("CARBON DIOXIDE"),
+        -:  451:                    get_amount_of_molecules("GLUCOSE"));
+        -:  452:    }
+        -:  453:
+        5:  454:    else if (strcmp(drink, "VODKA") == 0)
+        -:  455:    {
+        2:  456:        return min3(get_amount_of_molecules("WATER"),
+        -:  457:                    get_amount_of_molecules("ALCOHOL"),
+        -:  458:                    get_amount_of_molecules("GLUCOSE"));
+        -:  459:    }
+        -:  460:
+        3:  461:    else if (strcmp(drink, "CHAMPAGNE") == 0)
+        -:  462:    {
+        1:  463:        return min3(get_amount_of_molecules("WATER"),
+        -:  464:                    get_amount_of_molecules("CARBON DIOXIDE"),
+        -:  465:                    get_amount_of_molecules("ALCOHOL"));
+        -:  466:    }
+        -:  467:
+        -:  468:    else
+        2:  469:        return -1; // Unknown drink type
+        -:  470:}
+        -:  471:
+293967998:  472:void handle_stdin()
+        -:  473:{
+293967998:  474:    char buffer[BUFFER_SIZE] = {0}; // Buffer to hold the incoming data
+        -:  475:
+293967998:  476:    if (fgets(buffer, sizeof(buffer), stdin) == NULL)
+        -:  477:    {
+293967986:  478:        if (ferror(stdin))
+    #####:  479:            perror("fgets");
+293967993:  480:        return;
+        -:  481:    }
+        -:  482:
+        -:  483:    // Parse command for GEN
+        -:  484:    char command[16], drink[16];
+        -:  485:
+        -:  486:    // Extract just the command
+       12:  487:    if (sscanf(buffer, "%15s", command) != 1 || strcmp(command, "GEN") != 0)
+        -:  488:    {
+        3:  489:        printf("Invalid command: %s\n", buffer);
+        3:  490:        return;
+        -:  491:    }
+        -:  492:
+        -:  493:    // Find where the drink name starts (after "GEN ")
+        9:  494:    char *drink_part = buffer + strlen("GEN");
+       16:  495:    while (*drink_part == ' ' && *drink_part != '\0')
+        -:  496:    {
+        7:  497:        drink_part++;
+        -:  498:    }
+        -:  499:
+        -:  500:    // Copy the drink name (everything until newline)
+        9:  501:    strcpy(drink, drink_part);
+        -:  502:
+        -:  503:    // Remove trailing newline and spaces
+        9:  504:    int len = strlen(drink);
+       18:  505:    while (len > 0 && (drink[len - 1] == '\n' || drink[len - 1] == ' ' || drink[len - 1] == '\r'))
+        -:  506:    {
+        9:  507:        drink[--len] = '\0';
+        -:  508:    }
+        -:  509:
+        9:  510:    if (len == 0)
+        -:  511:    {
+        2:  512:        printf("Missing drink name\n");
+        2:  513:        return;
+        -:  514:    }
+        -:  515:
+        -:  516:    int result;
+        -:  517:    struct flock lock;
+        -:  518:    
+        -:  519:    // Lock if using shared file
+        7:  520:    if (fd >= 0) {
+    #####:  521:        lock.l_type = F_RDLCK;
+    #####:  522:        lock.l_whence = SEEK_SET;
+    #####:  523:        lock.l_start = 0;
+    #####:  524:        lock.l_len = sizeof(AtomWarehouse);
+        -:  525:
+    #####:  526:        fcntl(fd, F_SETLKW, &lock); // Lock the file for reading
+        -:  527:    }
+        -:  528:
+        7:  529:    result = get_amount_to_gen(drink); // Attempt to generate molecules
+        -:  530:    
+        -:  531:    
+        7:  532:    if(fd >= 0) {
+    #####:  533:        lock.l_type = F_UNLCK;
+    #####:  534:        fcntl(fd, F_SETLKW, &lock); // Unlock the file after reading
+        -:  535:    }
+        -:  536:
+        7:  537:    if (result == -1)
+        -:  538:    {
+        2:  539:        printf("Unknown drink type: %s\n", drink);
+        2:  540:        return;
+        -:  541:    }
+        -:  542:
+        5:  543:    if (result == 0)
+        -:  544:    {
+        2:  545:        printf("Not enough atoms to generate any %s.\n", drink);
+        -:  546:    }
+        -:  547:
+        -:  548:    else
+        -:  549:    {
+        3:  550:        printf("You can generate %d %s.\n", result, drink);
+        -:  551:    }
+        -:  552:}
+        -:  553:
+       67:  554:int main(int argc, char *argv[])
+        -:  555:{
+       67:  556:    int tcp_port = -1, udp_port = -1;
+       67:  557:    int timeout = -1;
+       67:  558:    unsigned long long oxygen = 0, carbon = 0, hydrogen = 0;
+       67:  559:    bool seen_flags[256] = { false }; // Track seen flags to avoid duplicates
+        -:  560:
+       67:  561:    struct option long_options[] = {
+        -:  562:        {"tcp-port", required_argument, NULL, 'T'},
+        -:  563:        {"udp-port", required_argument, NULL, 'U'},
+        -:  564:        {"oxygen", required_argument, NULL, 'o'},
+        -:  565:        {"carbon", required_argument, NULL, 'c'},
+        -:  566:        {"hydrogen", required_argument, NULL, 'h'},
+        -:  567:        {"timeout", required_argument, NULL, 't'},
+        -:  568:        {"stream-path", required_argument, 0, 's'},
+        -:  569:        {"datagram-path", required_argument, 0, 'd'},
+        -:  570:        {"save-file", required_argument, NULL, 'f'},
+        -:  571:        {0, 0, 0, 0}};
+        -:  572:    
+        -:  573:    while (1)
+      254:  574:    {
+      321:  575:        int ret = getopt_long(argc, argv, "T:U:o:c:h:t:s:d:f:", long_options, NULL);
+        -:  576:
+      321:  577:        if (ret == -1)
+        -:  578:        {
+       62:  579:            break;
+        -:  580:        }
+        -:  581:        
+      259:  582:        if (seen_flags[ret])
+        -:  583:        {
+        4:  584:            fprintf(stderr, "Error: Duplicate flag -%c\n", ret);
+        4:  585:            exit(EXIT_FAILURE);
+        -:  586:        }
+        -:  587:
+      255:  588:        seen_flags[ret] = true; // Mark this flag as seen
+        -:  589:
+      255:  590:        switch (ret)
+        -:  591:        {
+       54:  592:        case 'T':
+       54:  593:            tcp_port = atoi(optarg);
+       54:  594:            break;
+       49:  595:        case 'U':
+       49:  596:            udp_port = atoi(optarg);
+       49:  597:            break;
+       36:  598:        case 'o':
+       36:  599:            oxygen = strtoull(optarg, NULL, 10);
+       36:  600:            break;
+       33:  601:        case 'c':
+       33:  602:            carbon = strtoull(optarg, NULL, 10);
+       33:  603:            break;
+       34:  604:        case 'h':
+       34:  605:            hydrogen = strtoull(optarg, NULL, 10);
+       34:  606:            break;
+        4:  607:        case 't':
+        4:  608:            timeout = atoi(optarg);
+        4:  609:            break;
+       13:  610:        case 's':
+       13:  611:            stream_path = strdup(optarg); // Duplicate the string so it can be used after optarg is modified
+        -:  612:
+        -:  613:            // Append .socket if not already present
+       13:  614:            if (!strstr(stream_path, ".socket"))
+        -:  615:            {
+       13:  616:                char *new_path = malloc(strlen(stream_path) + 8); // +8 for ".socket\0"
+       13:  617:                if (new_path)
+        -:  618:                {
+       13:  619:                    sprintf(new_path, "%s.socket", stream_path);
+       13:  620:                    free(stream_path);
+       13:  621:                    stream_path = new_path;
+        -:  622:                }
+        -:  623:            }
+       13:  624:            break;
+       14:  625:        case 'd':
+       14:  626:            datagram_path = strdup(optarg); // Duplicate the string so it can be used after optarg is modified
+        -:  627:
+        -:  628:            // Append .socket if not already present
+       14:  629:            if (!strstr(datagram_path, ".socket"))
+        -:  630:            {
+       14:  631:                char *new_path = malloc(strlen(datagram_path) + 8); // +8 for ".socket\0"
+       14:  632:                if (new_path)
+        -:  633:                {
+       14:  634:                    sprintf(new_path, "%s.socket", datagram_path);
+       14:  635:                    free(datagram_path);
+       14:  636:                    datagram_path = new_path;
+        -:  637:                }
+        -:  638:            }
+       14:  639:            break;
+       17:  640:        case 'f':
+       17:  641:            save_file_path = strdup(optarg);
+        -:  642:
+       17:  643:            if (!strstr(save_file_path, ".dat"))
+        -:  644:            {
+       17:  645:                char *new_path = malloc(strlen(save_file_path) + 5); // +5 for ".dat\0"
+       17:  646:                if (new_path)
+        -:  647:                {
+       17:  648:                    sprintf(new_path, "%s.dat", save_file_path);
+       17:  649:                    free(save_file_path);
+       17:  650:                    save_file_path = new_path;
+        -:  651:                }
+        -:  652:            }
+       17:  653:            break;
+        1:  654:        case '?':
+        1:  655:            printf("Unknown option: %c\n", optopt);
+        1:  656:            exit(EXIT_FAILURE);
+        -:  657:        }
+        -:  658:    }
+        -:  659:
+       62:  660:    if ((tcp_port == -1 && stream_path == NULL) || (udp_port == -1 && datagram_path == NULL))
+        -:  661:    {
+        -:  662:        // If neither TCP nor UDP ports are specified, print an error message and exit
+        4:  663:        printf("You must specify at least one of the following (from each line):\n");
+        4:  664:        printf(" -T / --tcp-port <port> or -s / --stream-path <path>\n");
+        4:  665:        printf(" -U / --udp-port <port> or -d / --datagram-path <path>\n");
+        4:  666:        exit(EXIT_FAILURE);
+        -:  667:    }
+        -:  668:
+       58:  669:    else if (tcp_port != -1 && stream_path != NULL)
+        -:  670:    {
+        -:  671:        // If both TCP port and UDS stream path are specified, print an error message and exit
+        3:  672:        printf("You cannot specify both a TCP port and a UDS stream path.\n");
+        3:  673:        exit(EXIT_FAILURE);
+        -:  674:    }
+        -:  675:
+       55:  676:    else if (udp_port != -1 && datagram_path != NULL)
+        -:  677:    {
+        -:  678:        // If both UDP port and UDS datagram path are specified, print an error message and exit
+    #####:  679:        printf("You cannot specify both a UDP port and a UDS datagram path.\n");
+    #####:  680:        exit(EXIT_FAILURE);
+        -:  681:    }
+        -:  682:
+        -:  683:    // Validate that TCP and UDP ports are not the same
+       55:  684:    if (tcp_port != -1 && udp_port != -1 && tcp_port == udp_port) {
+        2:  685:        printf("Error: TCP and UDP cannot use the same port.\n");
+        2:  686:        exit(EXIT_FAILURE);
+        -:  687:    }
+        -:  688:
+        -:  689:    // Validate that stream and datagram paths are not the same
+       53:  690:    if (stream_path && datagram_path && strcmp(stream_path, datagram_path) == 0) {
+        1:  691:        printf("Error: Stream and datagram sockets cannot use the same path.\n");
+        1:  692:        exit(EXIT_FAILURE);
+        -:  693:    }
+        -:  694:
+       52:  695:    if (tcp_port != -1)
+        -:  696:    {
+        -:  697:        // Validate the port number
+       44:  698:        if (tcp_port <= 0 || tcp_port > 65535)
+        -:  699:        {
+        1:  700:            fprintf(stderr, "Invalid port number: %d\n", tcp_port);
+        1:  701:            exit(EXIT_FAILURE);
+        -:  702:        }
+        -:  703:
+       43:  704:        tcp_listener = socket(AF_INET, SOCK_STREAM, 0); // Create a TCP socket
+        -:  705:
+        -:  706:        // Check if the socket was created successfully
+       43:  707:        if (tcp_listener < 0)
+        -:  708:        {
+    #####:  709:            perror("socket");
+    #####:  710:            exit(EXIT_FAILURE);
+        -:  711:        }
+        -:  712:
+        -:  713:        // Set socket option to reuse address to avoid "address already in use"
+       43:  714:        int opt = 1;
+       43:  715:        if (setsockopt(tcp_listener, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        -:  716:        {
+    #####:  717:            perror("setsockopt");
+    #####:  718:            close(tcp_listener);
+    #####:  719:            exit(EXIT_FAILURE);
+        -:  720:        }
+        -:  721:
+       43:  722:        struct sockaddr_in tcp_address = {0};        // Initialize the address structure
+       43:  723:        socklen_t tcp_addrlen = sizeof(tcp_address); // Size of the address structure
+       43:  724:        tcp_address.sin_family = AF_INET;            // Set the address family to IPv4
+       43:  725:        tcp_address.sin_addr.s_addr = INADDR_ANY;    // Bind to any available address
+       43:  726:        tcp_address.sin_port = htons(tcp_port);      // Convert the port number to network byte order
+        -:  727:
+        -:  728:        // Bind the socket to the address and port (TCP)
+       43:  729:        if (bind(tcp_listener, (struct sockaddr *)&tcp_address, tcp_addrlen) < 0)
+        -:  730:        {
+       12:  731:            perror("bind");
+       12:  732:            close(tcp_listener); // Close the TCP socket
+       12:  733:            exit(EXIT_FAILURE);
+        -:  734:        }
+        -:  735:
+        -:  736:        // Set the socket to listen for incoming connections (TCP)
+       31:  737:        if (listen(tcp_listener, SOMAXCONN) < 0)
+        -:  738:        { // SOMAXCONN is the maximum queue length for pending connections
+    #####:  739:            perror("listen");
+    #####:  740:            close(tcp_listener);
+    #####:  741:            exit(EXIT_FAILURE);
+        -:  742:        }
+        -:  743:    }
+        -:  744:
+       39:  745:    if (udp_port != -1)
+        -:  746:    {
+        -:  747:        // Validate the port number
+       30:  748:        if (udp_port <= 0 || udp_port > 65535)
+        -:  749:        {
+        2:  750:            fprintf(stderr, "Invalid port number: %d\n", udp_port);
+        2:  751:            exit(EXIT_FAILURE);
+        -:  752:        }
+        -:  753:
+       28:  754:        udp_listener = socket(AF_INET, SOCK_DGRAM, 0); // Create a UDP socket
+        -:  755:
+        -:  756:        // Check if the UDP socket was created successfully
+       28:  757:        if (udp_listener < 0)
+        -:  758:        {
+    #####:  759:            perror("socket");
+    #####:  760:            if (tcp_listener >= 0)
+        -:  761:            {
+    #####:  762:                close(tcp_listener); // Close the TCP socket if UDP socket creation failed
+        -:  763:            }
+    #####:  764:            close(udp_listener); // Close the UDP socket
+    #####:  765:            exit(EXIT_FAILURE);
+        -:  766:        }
+        -:  767:
+        -:  768:        // For UDP binding, create a new address structure
+       28:  769:        struct sockaddr_in udp_address = {0};        // Initialize UDP address structure
+       28:  770:        socklen_t udp_addrlen = sizeof(udp_address); // Size of the address structure
+       28:  771:        udp_address.sin_family = AF_INET;            // Set the address family to IPv4
+       28:  772:        udp_address.sin_addr.s_addr = INADDR_ANY;    // Bind to any available address
+       28:  773:        udp_address.sin_port = htons(udp_port);      // Use the UDP port number
+        -:  774:
+        -:  775:        // Bind the socket to the address and port (UDP)
+       28:  776:        if (bind(udp_listener, (struct sockaddr *)&udp_address, udp_addrlen) < 0)
+        -:  777:        {
+    #####:  778:            perror("bind");
+    #####:  779:            if (tcp_listener >= 0)
+        -:  780:            {
+    #####:  781:                close(tcp_listener); // Close the TCP socket if UDP socket creation failed
+        -:  782:            }
+    #####:  783:            close(udp_listener); // Close the UDP socket
+    #####:  784:            exit(EXIT_FAILURE);
+        -:  785:        }
+        -:  786:    }
+        -:  787:
+       37:  788:    if (stream_path)
+        -:  789:    {
+        8:  790:        int stream_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        8:  791:        if (stream_fd < 0)
+        -:  792:        {
+    #####:  793:            perror("socket (UDS stream)");
+        -:  794:            // Clean up any previously created sockets
+    #####:  795:            if (tcp_listener >= 0)
+    #####:  796:                close(tcp_listener);
+    #####:  797:            if (udp_listener >= 0)
+    #####:  798:                close(udp_listener);
+    #####:  799:            exit(EXIT_FAILURE);
+        -:  800:        }
+        -:  801:
+        8:  802:        struct sockaddr_un stream_addr = {0};
+        8:  803:        stream_addr.sun_family = AF_UNIX;
+        -:  804:
+        -:  805:        // Check if path is too long
+        8:  806:        if (strlen(stream_path) >= sizeof(stream_addr.sun_path))
+        -:  807:        {
+        1:  808:            fprintf(stderr, "UDS stream path too long: %s\n", stream_path);
+        1:  809:            close(stream_fd);
+        1:  810:            if (tcp_listener >= 0)
+    #####:  811:                close(tcp_listener);
+        1:  812:            if (udp_listener >= 0)
+        1:  813:                close(udp_listener);
+        1:  814:            exit(EXIT_FAILURE);
+        -:  815:        }
+        -:  816:
+        7:  817:        strncpy(stream_addr.sun_path, stream_path, sizeof(stream_addr.sun_path) - 1);
+        7:  818:        unlink(stream_path); // Remove existing socket file (ignore errors here)
+        -:  819:
+        7:  820:        if (bind(stream_fd, (struct sockaddr *)&stream_addr, sizeof(stream_addr)) < 0)
+        -:  821:        {
+    #####:  822:            perror("bind (UDS stream)");
+    #####:  823:            close(stream_fd);
+    #####:  824:            if (tcp_listener >= 0)
+    #####:  825:                close(tcp_listener);
+    #####:  826:            if (udp_listener >= 0)
+    #####:  827:                close(udp_listener);
+    #####:  828:            exit(EXIT_FAILURE);
+        -:  829:        }
+        -:  830:
+        7:  831:        if (listen(stream_fd, SOMAXCONN) < 0)
+        -:  832:        {
+    #####:  833:            perror("listen (UDS stream)");
+    #####:  834:            close(stream_fd);
+    #####:  835:            unlink(stream_path); // Clean up the socket file
+    #####:  836:            if (tcp_listener >= 0)
+    #####:  837:                close(tcp_listener);
+    #####:  838:            if (udp_listener >= 0)
+    #####:  839:                close(udp_listener);
+    #####:  840:            exit(EXIT_FAILURE);
+        -:  841:        }
+        -:  842:
+        7:  843:        uds_stream_listener = stream_fd; // Store the socket descriptor
+        -:  844:    }
+        -:  845:
+       36:  846:    if (datagram_path)
+        -:  847:    {
+        9:  848:        int dgram_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        9:  849:        if (dgram_fd < 0)
+        -:  850:        {
+    #####:  851:            perror("socket (UDS datagram)");
+        -:  852:            // Clean up any previously created sockets
+    #####:  853:            if (tcp_listener >= 0)
+    #####:  854:                close(tcp_listener);
+    #####:  855:            if (udp_listener >= 0)
+    #####:  856:                close(udp_listener);
+    #####:  857:            if (uds_stream_listener >= 0)
+    #####:  858:                close(uds_stream_listener);
+    #####:  859:            exit(EXIT_FAILURE);
+        -:  860:        }
+        -:  861:
+        9:  862:        struct sockaddr_un dgram_addr = {0};
+        9:  863:        dgram_addr.sun_family = AF_UNIX;
+        -:  864:
+        -:  865:        // Check if path is too long
+        9:  866:        if (strlen(datagram_path) >= sizeof(dgram_addr.sun_path))
+        -:  867:        {
+        1:  868:            fprintf(stderr, "UDS datagram path too long: %s\n", datagram_path);
+        1:  869:            close(dgram_fd);
+        1:  870:            if (tcp_listener >= 0)
+        1:  871:                close(tcp_listener);
+        1:  872:            if (udp_listener >= 0)
+    #####:  873:                close(udp_listener);
+        1:  874:            if (uds_stream_listener >= 0)
+    #####:  875:                close(uds_stream_listener);
+        1:  876:            exit(EXIT_FAILURE);
+        -:  877:        }
+        -:  878:
+        8:  879:        strncpy(dgram_addr.sun_path, datagram_path, sizeof(dgram_addr.sun_path) - 1); // Ensure null termination
+        8:  880:        unlink(datagram_path);                                                        // Remove the socket file if it already exists (must be done before binding)
+        -:  881:
+        8:  882:        if (bind(dgram_fd, (struct sockaddr *)&dgram_addr, sizeof(dgram_addr)) < 0)
+        -:  883:        { // Bind the socket to the address
+    #####:  884:            perror("bind (UDS datagram)");
+    #####:  885:            close(dgram_fd);
+    #####:  886:            if (tcp_listener >= 0)
+    #####:  887:                close(tcp_listener);
+    #####:  888:            if (udp_listener >= 0)
+    #####:  889:                close(udp_listener);
+    #####:  890:            if (uds_stream_listener >= 0)
+    #####:  891:                close(uds_stream_listener);
+    #####:  892:            unlink(datagram_path); // Clean up the socket file
+    #####:  893:            exit(EXIT_FAILURE);
+        -:  894:        }
+        -:  895:
+        8:  896:        uds_dgram_fd = dgram_fd; // Store the socket descriptor
+        -:  897:    }
+        -:  898:
+       35:  899:    if (save_file_path) {
+        9:  900:        fd = open(save_file_path, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        9:  901:        if (fd == -1) {
+        1:  902:            perror("open");
+        1:  903:            exit(EXIT_FAILURE);
+        -:  904:        }
+        -:  905:
+        8:  906:        AtomWarehouse zero = {0};
+        8:  907:        off_t size = lseek(fd, 0, SEEK_END);  // Move to end to check size
+        8:  908:        if (size < sizeof(AtomWarehouse)) {
+        -:  909:            // File is empty or too small – initialize once
+        4:  910:            lseek(fd, 0, SEEK_SET);
+        4:  911:            write(fd, &zero, sizeof(AtomWarehouse));
+        -:  912:        }
+        8:  913:        lseek(fd, 0, SEEK_SET);  // Always reset to start before mmap
+        -:  914:
+        8:  915:        warehouse = mmap(NULL, sizeof(AtomWarehouse),
+        -:  916:                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        8:  917:        if (warehouse == MAP_FAILED) {
+    #####:  918:            perror("mmap");
+    #####:  919:            close(fd);
+    #####:  920:            exit(EXIT_FAILURE);
+        -:  921:        }
+        -:  922:    } 
+        -:  923:
+        -:  924:    else {
+       26:  925:        warehouse = malloc(sizeof(AtomWarehouse));
+       26:  926:        warehouse->carbon = carbon;
+       26:  927:        warehouse->oxygen = oxygen;
+       26:  928:        warehouse->hydrogen = hydrogen;
+        -:  929:    }
+        -:  930:
+        -:  931:    // Set up signal handlers for graceful shutdown
+       34:  932:    signal(SIGINT, handle_signal);
+       34:  933:    signal(SIGTERM, handle_signal);
+        -:  934:
+        -:  935:    // Allocate memory for the poll file descriptors
+       34:  936:    int fds_capacity = 10;
+       34:  937:    fds = malloc(fds_capacity * sizeof(struct pollfd));
+       34:  938:    if (!fds)
+        -:  939:    {
+    #####:  940:        perror("malloc");
+        -:  941:
+    #####:  942:        if (tcp_listener >= 0)
+    #####:  943:            close(tcp_listener); // Close the TCP listener if it was created
+    #####:  944:        else if (stream_path)
+    #####:  945:            unlink(stream_path); // Remove the UDS stream socket file if it was created
+        -:  946:
+    #####:  947:        if (udp_listener >= 0)
+    #####:  948:            close(udp_listener); // Close the UDP listener if it was created
+    #####:  949:        else if (datagram_path)
+    #####:  950:            unlink(datagram_path); // Remove the UDS datagram socket file if it was created
+        -:  951:
+    #####:  952:        exit(EXIT_FAILURE);
+        -:  953:    }
+        -:  954:
+        -:  955:    // Initialize the array to zero out all fields including revents
+       34:  956:    memset(fds, 0, fds_capacity * sizeof(struct pollfd));
+        -:  957:
+       34:  958:    if (tcp_listener >= 0)
+        -:  959:    {
+       27:  960:        fds[0].fd = tcp_listener; // The first element is the listener socket
+       27:  961:        fds[0].events = POLLIN;   // Set the listener to poll for incoming connections
+        -:  962:    }
+        -:  963:
+        7:  964:    else if (uds_stream_listener >= 0)
+        -:  965:    {
+        7:  966:        fds[0].fd = uds_stream_listener; // The fourth element is the UDS stream socket for incoming data
+        7:  967:        fds[0].events = POLLIN;          // Set the UDS stream listener to poll for incoming data
+        -:  968:    }
+        -:  969:
+       34:  970:    if (udp_listener >= 0)
+        -:  971:    {
+       26:  972:        fds[1].fd = udp_listener; // The second element is the UDP socket for incoming data
+       26:  973:        fds[1].events = POLLIN;   // Set the UDP listener to poll for incoming data
+        -:  974:    }
+        -:  975:
+        8:  976:    else if (uds_dgram_fd >= 0)
+        -:  977:    {
+        8:  978:        fds[1].fd = uds_dgram_fd; // The fifth element is the UDS datagram socket for incoming data
+        8:  979:        fds[1].events = POLLIN;   // Set the UDS datagram listener to poll for incoming data
+        -:  980:    }
+        -:  981:
+       34:  982:    fds[2].fd = STDIN_FILENO; // The third element is the standard input for commands
+       34:  983:    fds[2].events = POLLIN;   // Set the stdin to poll for incoming data
+        -:  984:
+       34:  985:    printf("drinks_bar server started (Use CTRL+C to shut down):\n");
+       34:  986:    if (tcp_listener >= 0)
+        -:  987:    {
+       27:  988:        printf("TCP server started on port: %d\n", tcp_port);
+        -:  989:    }
+        -:  990:
+        7:  991:    else if (stream_path)
+        -:  992:    {
+        7:  993:        printf("UDS stream server started on path: %s\n", stream_path);
+        -:  994:    }
+        -:  995:
+       34:  996:    if (udp_listener >= 0)
+        -:  997:    {
+       26:  998:        printf("UDP server started on port: %d\n", udp_port);
+        -:  999:    }
+        -: 1000:
+        8: 1001:    else if (datagram_path)
+        -: 1002:    {
+        8: 1003:        printf("UDS datagram server started on path: %s\n", datagram_path);
+        -: 1004:    }
+       34: 1005:    print_status(); // Print the initial status of the warehouse
+        -: 1006:
+       34: 1007:    if (timeout > 0)
+        -: 1008:    {
+        3: 1009:        signal(SIGALRM, handle_timeout);
+        3: 1010:        alarm(timeout);
+        -: 1011:    }
+        -: 1012:
+        -: 1013:    // Main loop to accept and handle client connections
+293969779: 1014:    while (running)
+        -: 1015:    {
+293969777: 1016:        int ready = poll(fds, nfds, 1000); // Poll with a timeout so we can check running flag
+        -: 1017:
+293969775: 1018:        if (!running)
+       30: 1019:            break; // Check if we need to exit
+        -: 1020:
+        -: 1021:        // Check if poll was successful
+293969745*: 1022:        if (ready < 0)
+        -: 1023:        {
+    #####: 1024:            perror("poll");
+    #####: 1025:            continue;
+        -: 1026:        }
+        -: 1027:
+        -: 1028:        static AtomWarehouse prev_snapshot = {0};
+        -: 1029:        static int first_time = 1;
+        -: 1030:
+293969745: 1031:        if (first_time) {
+       34: 1032:            prev_snapshot = *warehouse;
+       34: 1033:            first_time = 0;
+        -: 1034:        }
+        -: 1035:        
+293969711: 1036:        else if (memcmp(&prev_snapshot, warehouse, sizeof(AtomWarehouse)) != 0) {
+       67: 1037:            printf("[Update detected] Warehouse changed\n");
+       67: 1038:            print_status();
+       67: 1039:            prev_snapshot = *warehouse;
+        -: 1040:        }
+        -: 1041:
+        -: 1042:        // Check if the TCP or UDS stream listener socket has incoming connections
+293969745: 1043:        if (fds[0].revents & POLLIN)
+        -: 1044:        {
+       36: 1045:            if (timeout > 0)
+    #####: 1046:                alarm(timeout);                            // Reset the alarm for timeout
+       36: 1047:            int client_fd = accept(fds[0].fd, NULL, NULL); // Accept a new client connection
+        -: 1048:
+        -: 1049:            // Check if the accept was successful
+      36*: 1050:            if (client_fd < 0)
+        -: 1051:            {
+    #####: 1052:                perror("accept");
+    #####: 1053:                continue;
+        -: 1054:            }
+        -: 1055:
+        -: 1056:            // Resize the array if we're out of space
+       36: 1057:            if (nfds >= fds_capacity)
+        -: 1058:            {
+    #####: 1059:                fds_capacity *= 2; // Double the capacity
+    #####: 1060:                struct pollfd *new_fds = realloc(fds, fds_capacity * sizeof(struct pollfd));
+    #####: 1061:                if (!new_fds)
+        -: 1062:                {
+    #####: 1063:                    perror("realloc");
+    #####: 1064:                    close(client_fd);
+    #####: 1065:                    continue;
+        -: 1066:                }
+    #####: 1067:                fds = new_fds;
+        -: 1068:            }
+        -: 1069:
+        -: 1070:            // Add the new client to the end of the array
+       36: 1071:            fds[nfds].fd = client_fd;
+       36: 1072:            fds[nfds].events = POLLIN;
+       36: 1073:            nfds++;
+        -: 1074:        }
+        -: 1075:
+        -: 1076:        // Check if the UDP listener socket has incoming connections
+293969745: 1077:        if (fds[1].revents & POLLIN && udp_listener >= 0)
+        -: 1078:        {
+       30: 1079:            if (timeout > 0)
+    #####: 1080:                alarm(timeout); // Reset the alarm for timeout
+       30: 1081:            handle_udp_client(udp_listener);
+        -: 1082:        }
+        -: 1083:
+        -: 1084:        // Check if the UDS stream listener socket has incoming connections
+293969715: 1085:        else if (fds[1].revents & POLLIN && uds_dgram_fd >= 0)
+        -: 1086:        {
+       10: 1087:            if (timeout > 0)
+    #####: 1088:                alarm(timeout); // Reset the alarm for timeout
+       10: 1089:            handle_uds_datagram_client(uds_dgram_fd);
+        -: 1090:        }
+        -: 1091:
+        -: 1092:        // Check if the stdin has data to read
+293969745: 1093:        if (fds[2].revents & POLLIN)
+        -: 1094:        {
+293967998: 1095:            if (timeout > 0)
+  4677630: 1096:                alarm(timeout); // Reset the alarm for timeout
+293967998: 1097:            handle_stdin();
+        -: 1098:        }
+        -: 1099:
+        -: 1100:        // Iterate through the file descriptors to handle client requests
+428616665: 1101:        for (int i = 3; i < nfds; i++)
+        -: 1102:        {
+        -: 1103:            // Check if this fd has data to read
+134646920: 1104:            if (fds[i].revents & POLLIN)
+        -: 1105:            {
+       83: 1106:                alarm(timeout);
+       83: 1107:                int connection_closed = handle_tcp_or_uds_stream_client(fds[i].fd); // Handle the client request
+        -: 1108:
+       83: 1109:                if (connection_closed)
+        -: 1110:                {
+        -: 1111:                    // Shift remaining elements to fill the gap
+       29: 1112:                    for (int j = i; j < nfds - 1; j++)
+        -: 1113:                    {
+        1: 1114:                        fds[j] = fds[j + 1];
+        -: 1115:                    }
+       28: 1116:                    nfds--;
+       28: 1117:                    i--; // Adjust index since we removed an element
+        -: 1118:                }
+        -: 1119:            }
+        -: 1120:        }
+        -: 1121:    }
+        -: 1122:
+       32: 1123:    cleanup(); // Clean up: close all client sockets and free resources
+       32: 1124:    printf("\nServer shut down successfully.\n");
+       32: 1125:    return 0;
+        -: 1126:}

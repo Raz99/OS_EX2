@@ -1,0 +1,175 @@
+        -:    0:Source:atom_supplier.c
+        -:    0:Graph:atom_supplier.gcno
+        -:    0:Data:atom_supplier.gcda
+        -:    0:Runs:27
+        -:    1:#include <stdio.h>
+        -:    2:#include <stdlib.h>
+        -:    3:#include <string.h>
+        -:    4:#include <unistd.h>
+        -:    5:#include <netdb.h>
+        -:    6:#include <arpa/inet.h>
+        -:    7:#include <errno.h>
+        -:    8:#include <getopt.h>
+        -:    9:#include <sys/socket.h>
+        -:   10:#include <sys/un.h>
+        -:   11:#include <stdbool.h>
+        -:   12:
+        -:   13:#define BUFFER_SIZE 1024
+        -:   14:
+        -:   15:// Global variables for command line options
+        -:   16:extern int optopt;
+        -:   17:extern char *optarg;
+        -:   18:
+       27:   19:int main(int argc, char *argv[]) {
+       27:   20:    const char *hostname = NULL;
+       27:   21:    const char *port = NULL;
+       27:   22:    char *uds_path = NULL;
+       27:   23:    bool seen_flags[256] = { false }; // Track seen flags to avoid duplicates
+        -:   24:
+       39:   25:    while (1) {
+       66:   26:        int ret = getopt(argc, argv, "h:p:f:");
+        -:   27:
+       66:   28:        if (ret == -1)
+        -:   29:        {
+       22:   30:            break;
+        -:   31:        }
+        -:   32:
+       44:   33:        if (seen_flags[ret])
+        -:   34:        {
+        3:   35:            fprintf(stderr, "Error: Duplicate flag -%c\n", ret);
+        3:   36:            exit(EXIT_FAILURE);
+        -:   37:        }
+        -:   38:        
+       41:   39:        seen_flags[ret] = true; // Mark this flag as seen
+        -:   40:
+       41:   41:        switch (ret) {
+       16:   42:            case 'h':
+       16:   43:                hostname = optarg;
+       16:   44:                break;
+       16:   45:            case 'p':
+       16:   46:                port = optarg;
+       16:   47:                break;
+        7:   48:            case 'f':
+        7:   49:                uds_path = strdup(optarg); // Duplicate the string so it can be used after optarg is modified
+        -:   50:                // Append .socket if not already present
+        7:   51:                if (!strstr(uds_path, ".socket")) {
+        7:   52:                    char *new_path = malloc(strlen(uds_path) + 8); // +8 for ".socket\0"
+        7:   53:                    if (new_path) {
+        7:   54:                        sprintf(new_path, "%s.socket", uds_path);
+        7:   55:                        free(uds_path);
+        7:   56:                        uds_path = new_path;
+        -:   57:                    }
+        -:   58:                }
+        7:   59:                break;    
+        2:   60:            case '?':
+        2:   61:                printf("Usage: %s -h <hostname/IP> -p <port> | -f <unix_socket_path>\n", argv[0]);
+        2:   62:                exit(EXIT_FAILURE);
+        -:   63:        }
+        -:   64:    }
+        -:   65:    char message[BUFFER_SIZE]; // Buffer to hold the message to send
+        -:   66:    int sockfd;
+        -:   67:    
+       22:   68:    if ((uds_path && (hostname || port)) || (!uds_path && (!hostname || !port))) {
+        4:   69:        fprintf(stderr, "Error: Provide either -f <uds_path> or both -h <hostname> and -p <port>\n");
+        4:   70:        exit(EXIT_FAILURE);
+        -:   71:    }
+        -:   72:
+       18:   73:    if (uds_path){
+        -:   74:        // Check if the server socket exists
+        5:   75:        if (access(uds_path, F_OK) != 0) {
+        2:   76:            fprintf(stderr, "Error: Server socket '%s' does not exist\n", uds_path);
+        2:   77:            exit(EXIT_FAILURE);
+        -:   78:        }
+        -:   79:
+        3:   80:        sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        -:   81:
+        3:   82:        if (sockfd < 0) {
+    #####:   83:            perror("socket");
+    #####:   84:            exit(EXIT_FAILURE);
+        -:   85:        }
+        -:   86:
+        -:   87:        struct sockaddr_un addr;
+        3:   88:        memset(&addr, 0, sizeof(addr));
+        3:   89:        addr.sun_family = AF_UNIX;
+        3:   90:        strncpy(addr.sun_path, uds_path, sizeof(addr.sun_path) - 1);
+        -:   91:
+        3:   92:        if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    #####:   93:            perror("connect (UDS)");
+    #####:   94:            close(sockfd);
+    #####:   95:            exit(EXIT_FAILURE);
+        -:   96:        }
+        -:   97:
+        3:   98:        printf("Connected to drinks_bar server via Unix socket: %s\n", uds_path);
+        -:   99:    }
+        -:  100:    
+        -:  101:
+       13:  102:    else if (hostname && port) {
+        -:  103:        // Resolve hostname
+       13:  104:        struct addrinfo hints = {0};
+        -:  105:        struct addrinfo *res; // Pointer to hold the resolved address info
+       13:  106:        hints.ai_family = AF_INET; // Use IPv4
+       13:  107:        hints.ai_socktype = SOCK_STREAM; // Use TCP
+        -:  108:
+       13:  109:        int status = getaddrinfo(hostname, port, &hints, &res);
+        -:  110:        
+        -:  111:        // Check if getaddrinfo was successful
+       13:  112:        if (status != 0) {
+        1:  113:            fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+        3:  114:            return EXIT_FAILURE;
+        -:  115:        }
+        -:  116:        
+        -:  117:        // Create the socket
+       12:  118:        sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        -:  119:        
+        -:  120:        // Check if the socket was created successfully
+       12:  121:        if (sockfd < 0) {
+    #####:  122:            perror("socket");
+    #####:  123:            freeaddrinfo(res);
+    #####:  124:            return EXIT_FAILURE;
+        -:  125:        }
+        -:  126:
+        -:  127:        // Connect to the server
+       12:  128:        if (connect(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
+        2:  129:            perror("connect");
+        2:  130:            close(sockfd);
+        2:  131:            freeaddrinfo(res);
+        2:  132:            return EXIT_FAILURE;
+        -:  133:        }
+        -:  134:        
+       10:  135:        printf("Connected to drinks_bar server at %s:%s (TCP)\n", hostname, port);
+       10:  136:        freeaddrinfo(res); // Free the address info structure after establishing the connection
+        -:  137:    }
+        -:  138:
+        -:  139:    // Main loop to read commands from the user with persistent connection
+       97:  140:    while (1) {
+      110:  141:        printf("Enter a command (e.g., ADD HYDROGEN 3) or type \"q\" to quit:\n> ");
+        -:  142:        
+     110*:  143:        if (!fgets(message, BUFFER_SIZE, stdin)) break; // Read user input (break on EOF)
+        -:  144:
+        -:  145:        // Remove newline
+      110:  146:        size_t len = strlen(message);
+      110:  147:        if (len > 0 && message[len - 1] == '\n') message[len - 1] = '\0';
+        -:  148:
+      110:  149:        if (strcasecmp(message, "q") == 0) break; // Exit if the user types "q"
+        -:  150:
+        -:  151:        // Send the message to the server using the persistent connection
+       97:  152:        if (send(sockfd, message, strlen(message), 0) < 0) {
+        -:  153:            // If send fails, the connection might be broken
+    #####:  154:            if (errno == EPIPE || errno == ECONNRESET) {
+    #####:  155:                fprintf(stderr, "Connection lost. Server may have closed the connection.\n");
+    #####:  156:                break;
+        -:  157:            }
+        -:  158:            
+        -:  159:            else {
+    #####:  160:                perror("send");
+    #####:  161:                break;
+        -:  162:            }
+        -:  163:        }
+        -:  164:    }
+        -:  165:    
+        -:  166:    // Close the connection when done
+       13:  167:    printf("Closing connection to server.\n");
+       13:  168:    close(sockfd);
+        -:  169:    
+       13:  170:    return 0;
+        -:  171:}

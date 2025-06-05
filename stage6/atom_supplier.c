@@ -135,11 +135,6 @@ int main(int argc, char *argv[]) {
         printf("Connected to drinks_bar server at %s:%s (TCP)\n", hostname, port);
         freeaddrinfo(res); // Free the address info structure after establishing the connection
     }
-    
-    else {
-        fprintf(stderr, "Error: you must specify either -h <host> and -p <port> OR -f <socket_path>\n");
-        exit(EXIT_FAILURE);
-    }
 
     // Main loop to read commands from the user with persistent connection
     while (1) {
@@ -159,7 +154,9 @@ int main(int argc, char *argv[]) {
             if (errno == EPIPE || errno == ECONNRESET) {
                 fprintf(stderr, "Connection lost. Server may have closed the connection.\n");
                 break;
-            } else {
+            }
+            
+            else {
                 perror("send");
                 break;
             }

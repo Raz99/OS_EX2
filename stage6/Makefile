@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -fprofile-arcs -ftest-coverage
 TARGET_SERVER = drinks_bar
 TARGET_TCP_CLIENT = atom_supplier
 TARGET_UDP_CLIENT = molecule_requester
@@ -21,4 +21,4 @@ $(TARGET_UDP_CLIENT): molecule_requester.o
 	$(CC) $(CFLAGS) -c $<
 
 clean:
-	rm -f $(TARGET_SERVER) $(TARGET_TCP_CLIENT) $(TARGET_UDP_CLIENT) *.o *.socket *.dat
+	rm -f $(TARGET_SERVER) $(TARGET_TCP_CLIENT) $(TARGET_UDP_CLIENT) *.o *.socket *.dat *.gcda *.gcno *.gcov
