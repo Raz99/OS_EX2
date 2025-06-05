@@ -6,6 +6,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <getopt.h>
+#include <stdbool.h>
 
 #define BUFFER_SIZE 1024 // Size of the buffer for reading client requests
 
@@ -374,6 +375,7 @@ int main(int argc, char *argv[])
     int tcp_port = -1, udp_port = -1;
     int timeout = -1;
     unsigned long long oxygen = 0, carbon = 0, hydrogen = 0;
+    bool seen_flags[256] = { false }; // Track seen flags to avoid duplicates
 
     struct option long_options[] = {
         {"tcp-port", required_argument, NULL, 'T'},
@@ -392,6 +394,14 @@ int main(int argc, char *argv[])
         {
             break;
         }
+
+        if (seen_flags[ret])
+        {
+            fprintf(stderr, "Error: Duplicate flag -%c\n", ret);
+            exit(EXIT_FAILURE);
+        }
+
+        seen_flags[ret] = true; // Mark this flag as seen
 
         switch (ret)
         {
@@ -435,6 +445,12 @@ int main(int argc, char *argv[])
     if (udp_port <= 0 || udp_port > 65535)
     {
         fprintf(stderr, "Invalid port number: %d\n", udp_port);
+        exit(EXIT_FAILURE);
+    }
+
+    // Validate that TCP and UDP ports are not the same
+    if (tcp_port != -1 && udp_port != -1 && tcp_port == udp_port) {
+        printf("Error: TCP and UDP cannot use the same port.\n");
         exit(EXIT_FAILURE);
     }
 

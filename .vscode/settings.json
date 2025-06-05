@@ -4,6 +4,7 @@
         "in.h": "c",
         "stdio.h": "c",
         "unistd.h": "c",
-        "getopt.h": "c"
+        "getopt.h": "c",
+        "socket.h": "c"
     }
 }

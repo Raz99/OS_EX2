@@ -326,6 +326,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Invalid port number: %s\n", argv[2]);
         exit(EXIT_FAILURE);
     }
+    
+    // Validate that TCP and UDP ports are not the same
+    if (tcp_port != -1 && udp_port != -1 && tcp_port == udp_port) {
+        printf("Error: TCP and UDP cannot use the same port.\n");
+        exit(EXIT_FAILURE);
+    }
 
     AtomWarehouse warehouse = {0, 0, 0}; // Initialize the warehouse with zero atoms
 

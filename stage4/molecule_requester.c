@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <stdbool.h>
 
 #define BUFFER_SIZE 1024
 
@@ -14,6 +15,7 @@ extern char *optarg;
 int main(int argc, char *argv[]) {
     const char *hostname = NULL;
     const char *port = NULL;
+    bool seen_flags[256] = { false }; // Track seen flags to avoid duplicates
 
     while (1) {
         int ret = getopt(argc, argv, "h:p:");
@@ -22,6 +24,14 @@ int main(int argc, char *argv[]) {
         {
             break;
         }
+
+        if (seen_flags[ret])
+        {
+            fprintf(stderr, "Error: Duplicate flag -%c\n", ret);
+            exit(EXIT_FAILURE);
+        }
+
+        seen_flags[ret] = true; // Mark this flag as seen
 
         switch (ret) {
             case 'h':
