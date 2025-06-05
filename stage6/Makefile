@@ -21,4 +21,4 @@ $(TARGET_UDP_CLIENT): molecule_requester.o
 	$(CC) $(CFLAGS) -c $<
 
 clean:
-	rm -f $(TARGET_SERVER) $(TARGET_TCP_CLIENT) $(TARGET_UDP_CLIENT) *.o *.socket
+	rm -f $(TARGET_SERVER) $(TARGET_TCP_CLIENT) $(TARGET_UDP_CLIENT) *.o *.socket *.dat

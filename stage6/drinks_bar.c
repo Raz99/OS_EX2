@@ -639,6 +639,17 @@ int main(int argc, char *argv[])
             break;
         case 'f':
             save_file_path = strdup(optarg);
+
+            if (!strstr(save_file_path, ".dat"))
+            {
+                char *new_path = malloc(strlen(save_file_path) + 5); // +5 for ".dat\0"
+                if (new_path)
+                {
+                    sprintf(new_path, "%s.dat", save_file_path);
+                    free(save_file_path);
+                    save_file_path = new_path;
+                }
+            }
             break;
         case '?':
             printf("Unknown option: %c\n", optopt);
